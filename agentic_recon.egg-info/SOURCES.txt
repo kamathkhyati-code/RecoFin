@@ -1,0 +1,10 @@
+pyproject.toml
+agentic_recon.egg-info/PKG-INFO
+agentic_recon.egg-info/SOURCES.txt
+agentic_recon.egg-info/dependency_links.txt
+agentic_recon.egg-info/requires.txt
+agentic_recon.egg-info/top_level.txt
+datagents/__init__.py
+reasoning/__init__.py
+recon_platform/__init__.py
+tests/test_placeholder.py
