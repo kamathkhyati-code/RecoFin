@@ -3,6 +3,9 @@
 Every node here is a placeholder: it just logs a message and passes state
 through unchanged. Real agent logic gets swapped in by A, B, and C as their
 work lands. This file defines the shape of the graph and the gate logic.
+
+C4 adds: optional checkpointer for persistent, resumable state, and
+optional interrupt_before for pausing execution mid-run.
 """
 
 from __future__ import annotations
@@ -15,8 +18,6 @@ from recon_platform.state import ReconState, AgentMessage, MessageRole
 def _log(role: MessageRole, text: str) -> AgentMessage:
     return AgentMessage(role=role, content=text)
 
-
-# ---- Placeholder nodes (one per pipeline stage) ----
 
 def supervisor_node(state: ReconState) -> dict:
     return {"messages": [_log(MessageRole.SUPERVISOR, "Run planned.")]}
@@ -50,27 +51,29 @@ def learning_node(state: ReconState) -> dict:
     return {"messages": [_log(MessageRole.LEARNING, "Patterns learned.")]}
 
 
-# ---- Gates (conditional routers) ----
-
 def has_errors_gate(state: ReconState) -> str:
-    """Route to resolution if any issue is severity 'error', else continue."""
     issues = state.get("issues") or []
     has_critical = any(i.severity == "error" for i in issues)
     return "resolution" if has_critical else "normalization"
 
 
 def matched_gate(state: ReconState) -> str:
-    """Route to resolution if there are unmatched items, else consolidate."""
     return "resolution" if state.get("unmatched_count", 0) > 0 else "consolidation"
 
 
 def close_ready_gate(state: ReconState) -> str:
-    """Route to learning if the period is close-ready, else end the run."""
     return "learning" if state.get("close_ready") else "end"
 
 
-def build_graph():
-    """Assemble and compile the skeleton graph."""
+def build_graph(checkpointer=None, interrupt_before: list[str] | None = None):
+    """Assemble and compile the skeleton graph.
+
+    checkpointer: pass a LangGraph checkpointer (e.g. SqliteSaver) to enable
+        persistent, resumable state across process restarts. Omit for a
+        stateless, non-resumable compile (used by earlier C3 tests).
+    interrupt_before: node names to pause execution before. Used to test
+        interrupt/resume behavior.
+    """
     graph = StateGraph(ReconState)
 
     graph.add_node("supervisor", supervisor_node)
@@ -110,4 +113,4 @@ def build_graph():
 
     graph.add_edge("learning", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer, interrupt_before=interrupt_before)
