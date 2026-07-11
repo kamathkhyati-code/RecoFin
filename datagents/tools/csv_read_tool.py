@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import csv
-from decimal import Decimal, InvalidOperation
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from datagents.schemas import IngestResult, SourceType, Transaction
+from recon_platform.registry import registry
 from recon_platform.state import IssueRecord
 
 
+@registry.register(
+    "csv_read_tool",
+    description="Read transactions from a local CSV file into an IngestResult.",
+)
 def csv_read_tool(path: str, source_name: str = "csv") -> IngestResult:
     """Read transactions from a CSV file.
 
