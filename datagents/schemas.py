@@ -19,23 +19,38 @@ class SourceType(str, Enum):
     SFTP = "sftp"
 
 
+class Currency(str, Enum):
+    """Supported settlement currencies (ISO 4217). Extend as golden data requires."""
+
+    USD = "USD"
+    EUR = "EUR"
+    GBP = "GBP"
+    JPY = "JPY"
+    CHF = "CHF"
+    CAD = "CAD"
+    AUD = "AUD"
+    INR = "INR"
+
+
 class Transaction(BaseModel):
     """A single normalized financial transaction."""
 
     txn_id: str
     date: date
     amount: Decimal
-    currency: str
+    currency: Currency
     counterparty: str
     reference: str | None = None
     source: SourceType
 
-    @field_validator("currency")
+    @field_validator("currency", mode="before")
     @classmethod
-    def currency_must_be_iso(cls, v: str) -> str:
-        if len(v) != 3 or not v.isalpha():
-            raise ValueError("currency must be a 3-letter ISO code, e.g. USD")
-        return v.upper()
+    def _normalize_currency(cls, v: object) -> object:
+        # Uppercase/strip strings so "usd" -> Currency.USD; membership is
+        # enforced by the Currency enum, which raises ValidationError on junk.
+        if isinstance(v, str):
+            return v.strip().upper()
+        return v
 
     @field_validator("amount")
     @classmethod
