@@ -6,6 +6,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from datagents.schemas import IngestResult, SourceType, Transaction
+from datagents.tools.field_map_tool import field_map_tool
 from recon_platform.registry import registry
 from recon_platform.state import IssueRecord
 
@@ -14,19 +15,23 @@ from recon_platform.state import IssueRecord
     "csv_read_tool",
     description="Read transactions from a local CSV file into an IngestResult.",
 )
-def csv_read_tool(path: str, source_name: str = "csv") -> IngestResult:
+def csv_read_tool(
+    path: str,
+    source_name: str = "csv",
+    field_map: dict[str, str] | None = None,
+) -> IngestResult:
     """Read transactions from a CSV file.
 
     Expected columns: txn_id, date (ISO), amount, currency, counterparty, reference (optional).
     Malformed rows are recorded as issues rather than raising.
     """
     result = IngestResult(source_name=source_name)
-
     try:
         with open(path, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for i, row in enumerate(reader, start=1):
                 result.rows_read += 1
+                row = field_map_tool(row, field_map)
                 try:
                     txn = Transaction(
                         txn_id=row["txn_id"],
@@ -55,5 +60,4 @@ def csv_read_tool(path: str, source_name: str = "csv") -> IngestResult:
                 message=f"File not found: {path}",
             )
         )
-
     return result

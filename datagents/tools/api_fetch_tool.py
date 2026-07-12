@@ -12,15 +12,21 @@ from decimal import Decimal, InvalidOperation
 import httpx
 
 from datagents.schemas import IngestResult, SourceType, Transaction
+from datagents.tools.field_map_tool import field_map_tool
 from recon_platform.registry import registry
 from recon_platform.state import IssueRecord
 
 
-def _parse_records(records: list[dict], source_name: str) -> IngestResult:
+def _parse_records(
+    records: list[dict],
+    source_name: str,
+    field_map: dict[str, str] | None = None,
+) -> IngestResult:
     result = IngestResult(source_name=source_name)
 
     for i, row in enumerate(records, start=1):
         result.rows_read += 1
+        row = field_map_tool(row, field_map)
         try:
             txn = Transaction(
                 txn_id=row["txn_id"],
@@ -53,6 +59,7 @@ def api_fetch_tool(
     endpoint: str,
     source_name: str = "api",
     timeout: float = 5.0,
+    field_map: dict[str, str] | None = None,
 ) -> IngestResult:
     """GET transactions from an API endpoint and parse them.
 
@@ -85,4 +92,4 @@ def api_fetch_tool(
         )
         return result
 
-    return _parse_records(records, source_name)
+    return _parse_records(records, source_name, field_map)

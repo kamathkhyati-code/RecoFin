@@ -53,6 +53,7 @@ def sftp_fetch_tool(
     port: int = 22,
     local_dir: str = ".sftp_staging",
     sftp_client: object | None = None,
+    field_map: dict[str, str] | None = None,
 ) -> IngestResult:
     """Fetch a transaction file from an SFTP host and parse it.
 
@@ -82,7 +83,9 @@ def sftp_fetch_tool(
         )
         return result
 
-    result = csv_read_tool(str(local_path), source_name=source_name)
+    result = csv_read_tool(
+        str(local_path), source_name=source_name, field_map=field_map
+    )
 
     for txn in result.transactions:
         txn.source = SourceType.SFTP
