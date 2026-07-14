@@ -13,6 +13,7 @@ from __future__ import annotations
 from langgraph.graph import StateGraph, START, END
 
 from recon_platform.state import ReconState, AgentMessage, MessageRole
+from recon_platform.graph.routing import validation_gate, matched_gate, close_ready_gate
 
 
 def _log(role: MessageRole, text: str) -> AgentMessage:
@@ -51,19 +52,6 @@ def learning_node(state: ReconState) -> dict:
     return {"messages": [_log(MessageRole.LEARNING, "Patterns learned.")]}
 
 
-def has_errors_gate(state: ReconState) -> str:
-    issues = state.get("issues") or []
-    has_critical = any(i.severity == "error" for i in issues)
-    return "resolution" if has_critical else "normalization"
-
-
-def matched_gate(state: ReconState) -> str:
-    return "resolution" if state.get("unmatched_count", 0) > 0 else "consolidation"
-
-
-def close_ready_gate(state: ReconState) -> str:
-    return "learning" if state.get("close_ready") else "end"
-
 
 def build_graph(checkpointer=None, interrupt_before: list[str] | None = None):
     """Assemble and compile the skeleton graph.
@@ -91,8 +79,8 @@ def build_graph(checkpointer=None, interrupt_before: list[str] | None = None):
 
     graph.add_conditional_edges(
         "validation",
-        has_errors_gate,
-        {"resolution": "resolution", "normalization": "normalization"},
+        validation_gate,
+        {"resolution": "resolution", "normalization": "normalization", "ingestion": "ingestion"},
     )
 
     graph.add_edge("normalization", "matching")
