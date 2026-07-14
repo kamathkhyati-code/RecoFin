@@ -1,29 +1,32 @@
-﻿"""Ingestion Agent (A4) — LangGraph node that runs source tools and merges output.
+﻿"""Ingestion Agent (A4/A5) — LangGraph node: run source tools, retry, merge.
 
 Picks the right source tool per SourceConfig.source_type, applies schema-drift
-handling via each config's `field_map` (in SourceConfig.options), runs every
-source, and merges the per-source IngestResults into one typed dataset.
+handling via each config's `field_map`, retries transient fetch failures with
+backoff, merges the per-source IngestResults into one typed dataset, and emits a
+structured log line per source and for the overall run.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+from datagents.resilience import with_retry
 from datagents.schemas import IngestResult, SourceConfig, SourceType
 from datagents.tools.api_fetch_tool import api_fetch_tool
 from datagents.tools.csv_read_tool import csv_read_tool
 from datagents.tools.sftp_fetch_tool import sftp_fetch_tool
 
+logger = logging.getLogger("datagents.ingestion.agent")
 
-def _run_source(config: SourceConfig) -> IngestResult:
-    """Dispatch a single SourceConfig to its source tool and return the result."""
+
+def _call_tool(config: SourceConfig) -> IngestResult:
+    """Dispatch a single SourceConfig to its source tool (no retry)."""
     options = config.options or {}
     field_map = options.get("field_map")
 
     if config.source_type == SourceType.CSV:
         return csv_read_tool(
-            config.location,
-            source_name=config.name,
-            field_map=field_map,
+            config.location, source_name=config.name, field_map=field_map
         )
     if config.source_type == SourceType.API:
         return api_fetch_tool(
@@ -47,12 +50,29 @@ def _run_source(config: SourceConfig) -> IngestResult:
     raise ValueError(f"Unsupported source_type: {config.source_type!r}")
 
 
-def ingest_sources(configs: list[SourceConfig]) -> IngestResult:
-    """Run every source and merge results into one IngestResult.
+def _run_source(config: SourceConfig) -> IngestResult:
+    """Run one source with transient-failure retry, then log the outcome."""
+    options = config.options or {}
+    result = with_retry(
+        lambda: _call_tool(config),
+        retries=options.get("retries", 3),
+        base_delay=options.get("retry_base_delay", 0.5),
+    )
+    logger.info(
+        "source_ingested",
+        extra={
+            "source": config.name,
+            "type": config.source_type.value,
+            "rows_read": result.rows_read,
+            "transactions": len(result.transactions),
+            "issues": len(result.issues),
+        },
+    )
+    return result
 
-    Transactions and issues are concatenated across sources; rows_read is summed.
-    A failing source does not abort the others -- its failure lands in `issues`.
-    """
+
+def ingest_sources(configs: list[SourceConfig]) -> IngestResult:
+    """Run every source (with retry) and merge results into one IngestResult."""
     merged = IngestResult(source_name="merged")
     for config in configs:
         result = _run_source(config)
@@ -63,15 +83,15 @@ def ingest_sources(configs: list[SourceConfig]) -> IngestResult:
 
 
 def ingestion_agent(state: dict[str, Any]) -> dict[str, Any]:
-    """LangGraph node: ingest all configured sources into merged state.
-
-    Reads `source_configs` from state, ingests them, and returns a state update
-    carrying the merged transactions and issues. Kept dict-typed until C adds
-    `source_configs` / `transactions` to ReconState (coordination in flight).
-    """
+    """LangGraph node: ingest all configured sources into merged state."""
     configs = state.get("source_configs", [])
     merged = ingest_sources(configs)
-    return {
-        "transactions": merged.transactions,
-        "issues": merged.issues,
-    }
+    logger.info(
+        "ingestion_complete",
+        extra={
+            "sources": len(configs),
+            "transactions": len(merged.transactions),
+            "issues": len(merged.issues),
+        },
+    )
+    return {"transactions": merged.transactions, "issues": merged.issues}

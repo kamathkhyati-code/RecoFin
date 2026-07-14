@@ -1,0 +1,5 @@
+﻿txn_id,date,amount,currency,counterparty,reference
+B1,2026-01-05,1500.00,USD,ACME Corp,INV-1001
+B2,2026-01-06,2300.50,EUR,Globex,INV-1002
+B3,2026-01-07,900.00,gbp,Initech,INV-1003
+B4,2026-01-08,4200.00,USD,Umbrella,INV-1004

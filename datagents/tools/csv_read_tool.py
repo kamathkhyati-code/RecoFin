@@ -24,10 +24,11 @@ def csv_read_tool(
 
     Expected columns: txn_id, date (ISO), amount, currency, counterparty, reference (optional).
     Malformed rows are recorded as issues rather than raising.
+    Uses utf-8-sig so a leading BOM (e.g. from Excel exports) is ignored.
     """
     result = IngestResult(source_name=source_name)
     try:
-        with open(path, newline="", encoding="utf-8") as f:
+        with open(path, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for i, row in enumerate(reader, start=1):
                 result.rows_read += 1
