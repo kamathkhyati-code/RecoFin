@@ -5,6 +5,7 @@ from datetime import date
 from decimal import Decimal
 
 from datagents.schemas import Currency, SourceType, Transaction
+from recon_platform.registry import registry
 from reasoning.schemas import MatchType
 from reasoning.tools.matching_tools import exact_tool, fuzzy_tool, tolerance_tool
 
@@ -19,6 +20,17 @@ def _txn(txn_id, amount, ref, day=1, currency=Currency.USD):
         reference=ref,
         source=SourceType.CSV,
     )
+
+
+def test_tools_registered_in_registry():
+    names = registry.list_tools()
+    for n in ("exact_tool", "tolerance_tool", "fuzzy_tool"):
+        assert n in names
+        assert callable(registry.get(n).func)
+
+
+def test_registry_resolves_same_function():
+    assert registry.get("exact_tool").func is exact_tool
 
 
 def test_exact_tool_matches_identical():

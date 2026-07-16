@@ -2,8 +2,9 @@
 
 Each tool compares book vs source transactions and returns one-to-one
 MatchResults (greedy, best-first within the tool). Every result carries a
-confidence, a rule name, and a human-readable rationale. The matching agent
-(B4) runs these strongest-first and retires matched pairs between tools.
+confidence, a rule name, and a human-readable rationale. All three tools are
+registered in the shared ToolRegistry so the matching agent can resolve them
+by name (Architecture tab: run strategy tools strongest-first).
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import difflib
 from decimal import Decimal
 
 from datagents.schemas import Transaction
+from recon_platform.registry import registry
 from reasoning.schemas import MatchResult, MatchType
 
 
@@ -35,6 +37,10 @@ def _greedy(candidates: list[tuple[float, MatchResult]]) -> list[MatchResult]:
     return out
 
 
+@registry.register(
+    "exact_tool",
+    description="Match on identical currency, amount, date, and reference.",
+)
 def exact_tool(
     book: list[Transaction], source: list[Transaction]
 ) -> list[MatchResult]:
@@ -62,6 +68,10 @@ def exact_tool(
     return _greedy(candidates)
 
 
+@registry.register(
+    "tolerance_tool",
+    description="Match within an amount tolerance and a +/- date window.",
+)
 def tolerance_tool(
     book: list[Transaction],
     source: list[Transaction],
@@ -103,6 +113,10 @@ def tolerance_tool(
     return _greedy(candidates)
 
 
+@registry.register(
+    "fuzzy_tool",
+    description="Match on fuzzy reference similarity with a close-amount guard.",
+)
 def fuzzy_tool(
     book: list[Transaction],
     source: list[Transaction],
