@@ -1,4 +1,4 @@
-﻿"""Tests for the A6 Validation Agent and its deterministic checks."""
+﻿"""Tests for the A6/A7 Validation Agent, checks, and guardrailed LLM verdict."""
 from __future__ import annotations
 
 from datetime import date
@@ -48,7 +48,6 @@ def test_deterministic_bad_rows_get_correct_reason_codes():
     assert reasons_by_id.get("DUP") == {ReasonCode.DUPLICATE_TXN}
     assert reasons_by_id.get("ZERO") == {ReasonCode.NON_POSITIVE_AMOUNT}
     assert reasons_by_id.get("FX") == {ReasonCode.UNSUPPORTED_CURRENCY}
-    # 100% precision: the clean row is never flagged
     assert "OK1" not in reasons_by_id
 
 
@@ -60,15 +59,41 @@ def test_ambiguous_row_ignored_without_gateway():
     assert findings == []
 
 
-def test_ambiguous_row_uses_llm_when_gateway_present():
+def test_malformed_llm_verdict_is_caught_and_escalates():
+    # The LLM returns junk that doesn't fit LLMVerdict -> guard catches it ->
+    # we escalate to a human instead of guessing.
     txns = [_txn(txn_id="NOREF", reference=None)]
-    gateway = MockLLMGateway(canned_response="review")
+    gateway = MockLLMGateway(canned_response="totally not json")
 
     findings = validate_transactions(txns, gateway=gateway)
 
     assert len(findings) == 1
     assert findings[0].reason == ReasonCode.AMBIGUOUS
-    assert "review" in findings[0].detail
+    assert findings[0].escalate is True
+
+
+def test_review_verdict_sets_escalation():
+    txns = [_txn(txn_id="NOREF", reference=None)]
+    gateway = MockLLMGateway(
+        canned_response='{"verdict": "review", "confidence": 0.9, "reason": "no ref"}'
+    )
+
+    findings = validate_transactions(txns, gateway=gateway)
+
+    assert len(findings) == 1
+    assert findings[0].escalate is True
+
+
+def test_confident_ok_verdict_does_not_escalate():
+    txns = [_txn(txn_id="NOREF", reference=None)]
+    gateway = MockLLMGateway(
+        canned_response='{"verdict": "ok", "confidence": 0.95, "reason": "looks fine"}'
+    )
+
+    findings = validate_transactions(txns, gateway=gateway)
+
+    assert len(findings) == 1
+    assert findings[0].escalate is False
 
 
 def test_validation_agent_node_emits_issues():
