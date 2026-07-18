@@ -1,0 +1,222 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RecoFin - Reconciliation Demo</title>
+<style>
+  :root {
+    --bg: #0e1117;
+    --panel: #161b22;
+    --border: #2a2f3a;
+    --text: #e6e6e6;
+    --muted: #9aa4b2;
+    --accent: #ff4b4b;
+    --blue: #7cc6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+  }
+  .sidebar {
+    width: 280px;
+    padding: 24px;
+    border-right: 1px solid var(--border);
+    min-height: 100vh;
+  }
+  .sidebar h2 { margin-top: 0; }
+  .sidebar ol { padding-left: 18px; color: var(--muted); }
+  .main { flex: 1; padding: 32px 48px; max-width: 1200px; }
+  h1 { margin-bottom: 4px; }
+  .subtitle { color: var(--muted); margin-bottom: 24px; }
+  .upload-row { display: flex; gap: 24px; align-items: flex-end; margin-bottom: 20px; flex-wrap: wrap; }
+  .upload-field label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 14px; }
+  .upload-field input[type=file] { color: var(--text); }
+  .hint { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  button#run-btn {
+    background: var(--accent); color: white; border: none; border-radius: 6px;
+    padding: 12px 24px; font-size: 15px; cursor: pointer; font-weight: 600;
+  }
+  button#run-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .kpis { display: flex; gap: 48px; margin: 28px 0; }
+  .kpi .label { color: var(--muted); font-size: 14px; }
+  .kpi .value { font-size: 32px; font-weight: 700; }
+  .chart { display: flex; align-items: flex-end; gap: 40px; height: 180px; margin: 24px 0 40px; padding: 0 20px; }
+  .bar-wrap { display: flex; flex-direction: column; align-items: center; width: 120px; height: 100%; justify-content: flex-end; }
+  .bar { width: 100%; background: var(--blue); border-radius: 4px 4px 0 0; transition: height 0.3s; }
+  .bar-label { margin-top: 8px; color: var(--muted); font-size: 13px; }
+  .bar-value { color: var(--text); font-size: 13px; margin-bottom: 4px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+  .tab-btn {
+    background: none; border: none; color: var(--muted); padding: 10px 16px;
+    cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent;
+  }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 28px; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .split { display: flex; gap: 32px; }
+  .split > div { flex: 1; min-width: 0; }
+  .empty { color: var(--muted); }
+  #results.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <h2>RecoFin</h2>
+  <p style="color: var(--muted); font-size: 14px;">
+    An agentic reconciliation system - it matches a company's books against
+    the bank and flags what doesn't line up.
+  </p>
+  <p style="font-weight: 600; margin-bottom: 4px;">Pipeline</p>
+  <ol>
+    <li>Ingest - CSV upload or sample data</li>
+    <li>Validate - catch bad data</li>
+    <li>Normalize - one currency, canonical names</li>
+    <li>Match - real matching agent: exact -&gt; tolerance -&gt; fuzzy</li>
+  </ol>
+</div>
+
+<div class="main">
+  <h1>RecoFin - Reconciliation Demo</h1>
+  <div class="subtitle">Ingest -&gt; Validate -&gt; Normalize -&gt; Match (FastAPI backend)</div>
+
+  <div class="upload-row">
+    <div class="upload-field">
+      <label for="book-file">Book CSV</label>
+      <input type="file" id="book-file" accept=".csv">
+    </div>
+    <div class="upload-field">
+      <label for="bank-file">Bank CSV</label>
+      <input type="file" id="bank-file" accept=".csv">
+    </div>
+    <button id="run-btn">Run reconciliation</button>
+  </div>
+  <div class="hint">
+    Leave both empty to run the built-in 101-row sample dataset.
+    Bank CSV is expected in the drifted format (transaction_id, value_date, amount, ccy, counterparty, reference).
+  </div>
+
+  <div id="results" class="hidden">
+    <div class="kpis">
+      <div class="kpi"><div class="label">Match rate</div><div class="value" id="kpi-rate">-</div></div>
+      <div class="kpi"><div class="label">Matched</div><div class="value" id="kpi-matched">-</div></div>
+      <div class="kpi"><div class="label">Unmatched</div><div class="value" id="kpi-unmatched">-</div></div>
+      <div class="kpi"><div class="label">Bad rows rejected</div><div class="value" id="kpi-rejected">-</div></div>
+    </div>
+
+    <div class="chart">
+      <div class="bar-wrap">
+        <div class="bar-value" id="bar-matched-label">0</div>
+        <div class="bar" id="bar-matched" style="height:0%"></div>
+        <div class="bar-label">Matched</div>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar-value" id="bar-rejected-label">0</div>
+        <div class="bar" id="bar-rejected" style="height:0%"></div>
+        <div class="bar-label">Rejected</div>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar-value" id="bar-unmatched-label">0</div>
+        <div class="bar" id="bar-unmatched" style="height:0%"></div>
+        <div class="bar-label">Unmatched</div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" id="btn-results">Results</button>
+      <button class="tab-btn" id="btn-normalization">Normalization (before -&gt; after)</button>
+      <button class="tab-btn" id="btn-raw">Raw &amp; findings</button>
+    </div>
+    <div class="tab-content active" id="tab-results"></div>
+    <div class="tab-content" id="tab-normalization"></div>
+    <div class="tab-content" id="tab-raw"></div>
+  </div>
+</div>
+
+<script>
+function buildTable(rows) {
+  if (!rows || rows.length === 0) return '<p class="empty">No rows.</p>';
+  const cols = Object.keys(rows[0]);
+  let html = '<table><thead><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+  for (const r of rows) {
+    html += '<tr>' + cols.map(c => `<td>${r[c] === null || r[c] === undefined ? '' : r[c]}</td>`).join('') + '</tr>';
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('btn-' + name).classList.add('active');
+}
+
+function render(data) {
+  const s = data.summary;
+  document.getElementById('kpi-rate').textContent = s.match_rate + '%';
+  document.getElementById('kpi-matched').textContent = s.matched;
+  document.getElementById('kpi-unmatched').textContent = s.unmatched;
+  document.getElementById('kpi-rejected').textContent = s.bad_rows_rejected;
+
+  const maxVal = Math.max(s.matched, s.unmatched, s.bad_rows_rejected, 1);
+  document.getElementById('bar-matched').style.height = (s.matched / maxVal * 100) + '%';
+  document.getElementById('bar-unmatched').style.height = (s.unmatched / maxVal * 100) + '%';
+  document.getElementById('bar-rejected').style.height = (s.bad_rows_rejected / maxVal * 100) + '%';
+  document.getElementById('bar-matched-label').textContent = s.matched;
+  document.getElementById('bar-unmatched-label').textContent = s.unmatched;
+  document.getElementById('bar-rejected-label').textContent = s.bad_rows_rejected;
+
+  document.getElementById('tab-results').innerHTML =
+    '<h3>Matched pairs</h3>' + buildTable(data.matches) +
+    '<h3>Unmatched - needs review</h3>' + buildTable(data.unmatched);
+
+  document.getElementById('tab-normalization').innerHTML =
+    '<p style="color: var(--muted);">Normalization converts everything to USD and canonical names, so the book and bank become comparable.</p>' +
+    '<div class="split"><div><h4>Book - raw</h4>' + buildTable(data.book_raw) + '</div>' +
+    '<div><h4>Book - normalized</h4>' + buildTable(data.book_normalized) + '</div></div>';
+
+  document.getElementById('tab-raw').innerHTML =
+    '<h3>Validation findings</h3>' + buildTable(data.validation_findings.length ? data.validation_findings : [{status: 'all clean'}]) +
+    '<h3>Bank - raw ingested</h3>' + buildTable(data.bank_raw);
+
+  document.getElementById('results').classList.remove('hidden');
+}
+
+async function runReconciliation() {
+  const runBtn = document.getElementById('run-btn');
+  runBtn.disabled = true;
+  runBtn.textContent = 'Running...';
+
+  const bookInput = document.getElementById('book-file');
+  const bankInput = document.getElementById('bank-file');
+  const formData = new FormData();
+  if (bookInput.files.length > 0) formData.append('book_file', bookInput.files[0]);
+  if (bankInput.files.length > 0) formData.append('bank_file', bankInput.files[0]);
+
+  try {
+    const resp = await fetch('/reconcile', { method: 'POST', body: formData });
+    if (!resp.ok) throw new Error(await resp.text());
+    render(await resp.json());
+  } catch (e) {
+    alert('Error running reconciliation: ' + e.message);
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = 'Run reconciliation';
+  }
+}
+
+document.getElementById('run-btn').addEventListener('click', runReconciliation);
+document.getElementById('btn-results').addEventListener('click', () => showTab('results'));
+document.getElementById('btn-normalization').addEventListener('click', () => showTab('normalization'));
+document.getElementById('btn-raw').addEventListener('click', () => showTab('raw'));
+</script>
+</body>
+</html>

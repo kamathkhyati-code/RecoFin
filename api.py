@@ -1,5 +1,10 @@
-﻿from fastapi import FastAPI
+﻿import shutil
+import tempfile
 from pathlib import Path
+
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import FileResponse
+
 from datagents.agents.ingestion_agent import ingest_sources
 from datagents.agents.normalization_agent import normalize_transactions
 from datagents.agents.validation_agent import validate_transactions
@@ -8,7 +13,9 @@ from reasoning.agents.matching_agent import run_matching
 
 app = FastAPI(title="RecoFin Reconciliation API")
 
-SAMPLE = Path(__file__).parent / "sample_data"
+ROOT = Path(__file__).parent
+SAMPLE = ROOT / "sample_data"
+STATIC = ROOT / "static"
 BANK_FIELD_MAP = {"transaction_id": "txn_id", "value_date": "date", "ccy": "currency"}
 
 
@@ -23,23 +30,50 @@ def _txn_dict(t):
     }
 
 
+def _save_upload(upload: UploadFile, dest: Path) -> Path:
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(upload.file, f)
+    return dest
+
+
+@app.get("/")
+def index():
+    return FileResponse(STATIC / "index.html")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
 @app.post("/reconcile")
-def reconcile():
-    book_res = ingest_sources([
-        SourceConfig(name="book", source_type=SourceType.CSV, location=str(SAMPLE / "demo_book.csv")),
-    ])
-    bank_res = ingest_sources([
-        SourceConfig(
-            name="bank", source_type=SourceType.CSV,
-            location=str(SAMPLE / "demo_bank.csv"),
-            options={"field_map": BANK_FIELD_MAP},
-        ),
-    ])
+async def reconcile(
+    book_file: UploadFile | None = File(None),
+    bank_file: UploadFile | None = File(None),
+):
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+
+        if book_file is not None and book_file.filename:
+            book_path = _save_upload(book_file, tmp / "book.csv")
+        else:
+            book_path = SAMPLE / "demo_book.csv"
+
+        if bank_file is not None and bank_file.filename:
+            bank_path = _save_upload(bank_file, tmp / "bank.csv")
+        else:
+            bank_path = SAMPLE / "demo_bank.csv"
+
+        book_res = ingest_sources([
+            SourceConfig(name="book", source_type=SourceType.CSV, location=str(book_path)),
+        ])
+        bank_res = ingest_sources([
+            SourceConfig(
+                name="bank", source_type=SourceType.CSV, location=str(bank_path),
+                options={"field_map": BANK_FIELD_MAP},
+            ),
+        ])
+
     findings = validate_transactions(book_res.transactions + bank_res.transactions)
     book_norm = normalize_transactions(book_res.transactions)
     bank_norm = normalize_transactions(bank_res.transactions)

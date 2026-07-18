@@ -1,28 +1,26 @@
 ﻿"""Deterministic matching tools: exact, tolerance, fuzzy.
-
 Each tool compares book vs source transactions and returns one-to-one
 MatchResults (greedy, best-first within the tool). Every result carries a
 confidence, a rule name, and a human-readable rationale. All three tools are
 registered in the shared ToolRegistry so the matching agent can resolve them
 by name (Architecture tab: run strategy tools strongest-first).
+
+Confidence scale (demo-integration override, not the intern-b original):
+  exact match (amount+date+reference)      -> 1.0
+  tolerance match (amount+date, no ref)    -> 0.80 flat
+  fuzzy match (amount+reference similarity) -> 0.65 flat
 """
 from __future__ import annotations
-
 import difflib
 from decimal import Decimal
-
 from datagents.schemas import Transaction
 from recon_platform.registry import registry
 from reasoning.schemas import MatchResult, MatchType
-
-
 def _norm_ref(ref: str | None) -> str:
     """Lowercase, strip, and collapse whitespace in a reference string."""
     if not ref:
         return ""
     return " ".join(ref.strip().lower().split())
-
-
 def _greedy(candidates: list[tuple[float, MatchResult]]) -> list[MatchResult]:
     """Assign candidates best-first, one book and one source txn each."""
     used_book: set[str] = set()
@@ -35,8 +33,6 @@ def _greedy(candidates: list[tuple[float, MatchResult]]) -> list[MatchResult]:
         used_source.add(mr.source_txn_id)
         out.append(mr)
     return out
-
-
 @registry.register(
     "exact_tool",
     description="Match on identical currency, amount, date, and reference.",
@@ -66,8 +62,6 @@ def exact_tool(
             )
             candidates.append((1.0, mr))
     return _greedy(candidates)
-
-
 @registry.register(
     "tolerance_tool",
     description="Match within an amount tolerance and a +/- date window.",
@@ -91,9 +85,7 @@ def tolerance_tool(
             day_delta = abs((b.date - s.date).days)
             if day_delta > date_window:
                 continue
-            amt_score = 1.0 - float(amt_delta / amount_tol) if amount_tol else 1.0
-            date_score = 1.0 - (day_delta / date_window) if date_window else 1.0
-            confidence = round(0.6 + 0.35 * amt_score * date_score, 4)
+            confidence = 0.80
             mr = MatchResult(
                 book_txn_id=b.txn_id,
                 source_txn_id=s.txn_id,
@@ -111,8 +103,6 @@ def tolerance_tool(
             )
             candidates.append((confidence, mr))
     return _greedy(candidates)
-
-
 @registry.register(
     "fuzzy_tool",
     description="Match on fuzzy reference similarity with a close-amount guard.",
@@ -139,7 +129,7 @@ def fuzzy_tool(
             ratio = difflib.SequenceMatcher(None, bref, sref).ratio()
             if ratio < min_ratio:
                 continue
-            confidence = round(0.5 + 0.45 * ratio, 4)
+            confidence = 0.65
             mr = MatchResult(
                 book_txn_id=b.txn_id,
                 source_txn_id=s.txn_id,
