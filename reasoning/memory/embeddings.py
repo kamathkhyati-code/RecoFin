@@ -37,6 +37,9 @@ class HashingEmbeddingFunction:
     def __call__(self, input: list[str]) -> list[list[float]]:
         return [embed(text) for text in input]
 
+    def embed_query(self, input: list[str]) -> list[list[float]]:
+        return self.__call__(input)
+
     def name(self) -> str:
         return "hashing_embedding_function"
 

@@ -95,36 +95,6 @@ def test_classification_accuracy_on_labeled_set():
         (_txn("b2", "500.00", date(2026, 6, 1)), [], ExcType.MISSING),
         (*_case("b3", "100.00", date(2026, 6, 1), "s3", "100.00", date(2026, 6, 3)), ExcType.TIMING),
         (*_case("b4", "750.00", date(2026, 6, 10), "s4", "750.00", date(2026, 6, 12)), ExcType.TIMING),
-cat >> reasoning/tests/test_exception_agent.py << 'EOF'
-
-
-def _case(bid, amt, bdate, sid, samt, sdate, scur=Currency.USD, bcur=Currency.USD):
-    b = _txn(bid, amt, bdate, currency=bcur)
-    s = _txn(sid, samt, sdate, currency=scur, source=SourceType.API)
-    return b, [s]
-
-
-def test_classification_accuracy_on_labeled_set():
-    cases = [
-        (_txn("b1", "100.00", date(2026, 6, 1)), [], ExcType.MISSING),
-        (_txn("b2", "500.00", date(2026, 6, 1)), [], ExcType.MISSING),
-        (*_case("b3", "100.00", date(2026, 6, 1), "s3", "100.00", date(2026, 6, 3)), ExcType.TIMING),
-        (*_case("b4", "750.00", date(2026, 6, 10), "s4", "750.00", date(2026, 6, 12)), ExcType.TIMING)
-cat >> reasoning/tests/test_exception_agent.py << 'EOF'
-
-
-def _case(bid, amt, bdate, sid, samt, sdate, scur=Currency.USD, bcur=Currency.USD):
-    b = _txn(bid, amt, bdate, currency=bcur)
-    s = _txn(sid, samt, sdate, currency=scur, source=SourceType.API)
-    return b, [s]
-
-
-def test_classification_accuracy_on_labeled_set():
-    cases = [
-        (_txn("b1", "100.00", date(2026, 6, 1)), [], ExcType.MISSING),
-        (_txn("b2", "500.00", date(2026, 6, 1)), [], ExcType.MISSING),
-        (*_case("b3", "100.00", date(2026, 6, 1), "s3", "100.00", date(2026, 6, 3)), ExcType.TIMING),
-        (*_case("b4", "750.00", date(2026, 6, 10), "s4", "750.00", date(2026, 6, 12)), ExcType.TIMING),
         (*_case("b5", "200.00", date(2026, 6, 1), "s5", "200.00", date(2026, 6, 1), scur=Currency.EUR), ExcType.FX),
         (*_case("b6", "1000.00", date(2026, 6, 5), "s6", "1000.00", date(2026, 6, 5), bcur=Currency.GBP), ExcType.FX),
         (*_case("b7", "100.00", date(2026, 6, 1), "s7", "102.50", date(2026, 6, 1)), ExcType.MISMATCH),

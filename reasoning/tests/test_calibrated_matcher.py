@@ -71,18 +71,3 @@ def test_calibration_distant_memory_hit_does_not_boost():
     match = _match("b1", "s1", confidence=0.8)
     hits = [{"distance": 0.9, "metadata": {}}]
     assert calibrate_confidence(match, hits) == 0.8
-
-
-def
-python3 - << 'PYEOF'
-path = "reasoning/tests/test_calibrated_matcher.py"
-with open(path) as f:
-    lines = f.readlines()
-
-cleaned = [ln for ln in lines if ln.strip() != "pytest reasoning/ -v"]
-
-with open(path, "w") as f:
-    f.writelines(cleaned)
-
-print(f"removed {len(lines) - len(cleaned)} stray line(s)")
-PYEOF
