@@ -1,8 +1,8 @@
 ﻿"""Reasoning-track schemas: match results, exceptions, report, rule suggestions.
 
-Owned by Intern A (matching spine). Consumed by Intern C's exception,
-learning, and consolidation agents. Transaction references are string IDs so
-this module stays decoupled from datagents.schemas.Transaction.
+Owned by Intern B (matching spine). Consumed by Intern C's HITL, learning,
+and consolidation agents. Transaction references are string IDs so this
+module stays decoupled from datagents.schemas.Transaction.
 """
 from __future__ import annotations
 

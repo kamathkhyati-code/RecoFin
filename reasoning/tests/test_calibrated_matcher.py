@@ -7,7 +7,6 @@ from datagents.schemas import Currency, SourceType, Transaction
 from reasoning.agents.calibrated_matcher import (
     HallucinationError,
     calibrate_confidence,
-    calibrate_matches,
     guard_against_fabricated_ids,
 )
 from reasoning.schemas import MatchResult, MatchType
