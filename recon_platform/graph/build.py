@@ -1,26 +1,36 @@
-"""LangGraph skeleton for the Agentic Recon pipeline.
+﻿"""LangGraph skeleton for the Agentic Recon pipeline.
 
-supervisor/ingestion/validation/normalization/consolidation/learning are
-still placeholders: they just log a message and pass state through
-unchanged, pending real A-side wiring at A11. matching and resolution are
-real as of B11: they run B10's matching sub-graph and B9's exception
-escalation respectively. This file defines the shape of the graph and the
-gate logic.
+A11: ingestion/validation/normalization are now real (previously
+placeholders). matching and resolution are real as of B11. This file
+defines the shape of the graph and the gate logic.
+
+A11 data-flow note: `Transaction` has no field recording which named
+source_config it came from, so the only reliable way to keep book vs.
+bank transactions separate through the pipeline is to ingest and
+normalize them via two separate calls, not one merged call that gets
+split apart afterward. Callers supply `book_source_configs` and
+`bank_source_configs` (each a list[SourceConfig]) instead of a single
+flat `source_configs` list. Validation still runs on the combined set,
+since cross-source checks (e.g. dedupe) need to see both sides at once.
 
 C4 adds: optional checkpointer for persistent, resumable state, and
 optional interrupt_before for pausing execution mid-run.
 """
-
 from __future__ import annotations
 
 from langgraph.graph import StateGraph, START, END
 
+from datagents.agents.ingestion_agent import ingest_sources
+from datagents.agents.normalization_agent import normalize_transactions
+from datagents.agents.validation_agent import validate_transactions
+from datagents.tools.alias_store import AliasStore
+from datagents.tools.validation_tools import ReasonCode
 from reasoning.agents.exception_escalation import escalate_exceptions
 from reasoning.agents.learning_agent import learning_agent
 from reasoning.match_subgraph import run_match_subgraph
 from reasoning.schemas import ReconReport
 from recon_platform.hitl.review_queue import pending_for_run
-from recon_platform.state import ReconState, AgentMessage, MessageRole
+from recon_platform.state import ReconState, AgentMessage, MessageRole, IssueRecord
 from recon_platform.graph.routing import validation_gate, matched_gate, close_ready_gate
 
 
@@ -33,32 +43,115 @@ def supervisor_node(state: ReconState) -> dict:
 
 
 def ingestion_node(state: ReconState) -> dict:
-    """Still a placeholder pending A11's real ingestion_agent wiring.
+    """A11: real ingestion, book and bank kept separate.
 
     Increments retry_count regardless: validation_gate reads retry_count
     to decide when a genuinely critical (batch-level) validation issue
     has exhausted its retries and should escalate to resolution instead
     of looping ingestion<->validation forever. Nothing else in the graph
-    ever increments it, so this has to happen here -- A11's real
-    ingestion_node must keep this line when it replaces this placeholder.
+    ever increments it, so this has to happen here.
+
+    If no book_source_configs/bank_source_configs are supplied, this is a
+    synthetic test state -- e.g. regression/HITL tests that inject
+    book_transactions/source_transactions or issues directly into
+    initial_state to isolate gate/retry logic from real ingestion (the
+    same pattern matching_node's own docstring already relies on). Stay a
+    pure pass-through except for the retry_count bump in that case,
+    exactly like the original placeholder -- otherwise this node would
+    silently wipe out whatever the test seeded.
     """
+    book_configs = state.get("book_source_configs")
+    bank_configs = state.get("bank_source_configs")
+
+    if not book_configs and not bank_configs:
+        return {
+            "retry_count": state.get("retry_count", 0) + 1,
+            "messages": [_log(MessageRole.INGESTION, "Data ingested.")],
+        }
+
+    book_result = ingest_sources(book_configs or [])
+    bank_result = ingest_sources(bank_configs or [])
+
+    transactions = list(book_result.transactions) + list(bank_result.transactions)
+    new_issues = list(book_result.issues) + list(bank_result.issues)
+    combined_issues = list(state.get("issues", [])) + new_issues
+
+    content = (
+        f"Ingested {len(book_result.transactions)} book txn(s), "
+        f"{len(bank_result.transactions)} bank txn(s); {len(new_issues)} issue(s)."
+    )
     return {
+        "book_transactions": book_result.transactions,
+        "source_transactions": bank_result.transactions,
+        "transactions": transactions,
+        "issues": combined_issues,
         "retry_count": state.get("retry_count", 0) + 1,
-        "messages": [_log(MessageRole.INGESTION, "Data ingested.")],
+        "messages": [_log(MessageRole.INGESTION, content)],
     }
 
 
 def validation_node(state: ReconState) -> dict:
-    return {"messages": [_log(MessageRole.VALIDATION, "Validation complete.")]}
+    """A11: real validation over the combined book+bank transaction set.
+
+    `issues` has no reducer on ReconState, so returning it from this node
+    would silently replace whatever ingestion_node already put there.
+    Concatenate instead so ingestion-level and validation-level issues
+    both survive into the gate's check.
+    """
+    txns = state.get("transactions", [])
+    findings = validate_transactions(txns)
+
+    new_issues = [
+        IssueRecord(
+            source="validation",
+            severity="warning" if f.reason == ReasonCode.AMBIGUOUS else "error",
+            message=f"{f.reason.value}: {f.detail}",
+            row_ref=f.txn_id,
+        )
+        for f in findings
+    ]
+    combined_issues = list(state.get("issues", [])) + new_issues
+
+    content = f"Validation complete: {len(findings)} finding(s), {len(new_issues)} issue(s) this step."
+    return {
+        "validation_findings": findings,
+        "issues": combined_issues,
+        "messages": [_log(MessageRole.VALIDATION, content)],
+    }
+
+
+_ALIAS_STORE = AliasStore()
 
 
 def normalization_node(state: ReconState) -> dict:
-    return {"messages": [_log(MessageRole.NORMALIZATION, "Normalization complete.")]}
+    """A11: real normalization, book and bank normalized separately so
+    matching_node's book_transactions/source_transactions stay populated.
+
+    Uses a module-level AliasStore so the alias cache (A9) actually
+    persists across nodes within a run and across process runs, instead
+    of rebuilding an empty cache every time this node fires.
+    """
+    book_txns = state.get("book_transactions") or []
+    source_txns = state.get("source_transactions") or []
+
+    book_norm = normalize_transactions(book_txns, store=_ALIAS_STORE)
+    source_norm = normalize_transactions(source_txns, store=_ALIAS_STORE)
+    normalized = book_norm + source_norm
+
+    content = (
+        f"Normalized {len(book_norm)} book txn(s), {len(source_norm)} bank txn(s)."
+    )
+    return {
+        "book_transactions": book_norm,
+        "source_transactions": source_norm,
+        "normalized_transactions": normalized,
+        "transactions": normalized,
+        "messages": [_log(MessageRole.NORMALIZATION, content)],
+    }
 
 
 def matching_node(state: ReconState) -> dict:
     """B11: real matching + exception classification (B10's sub-graph).
-
     Threads book_transactions/source_transactions through deterministic
     matching, hallucination-guarded calibration, and exception
     classification. If neither is present, this is a synthetic test state
@@ -71,12 +164,10 @@ def matching_node(state: ReconState) -> dict:
     source = state.get("source_transactions") or []
     if not book and not source:
         return {"messages": [_log(MessageRole.MATCHING, "Matching complete.")]}
-
     result = run_match_subgraph(dict(state))
     matches = result["match_results"]
     exceptions = result["exceptions"]
     unmatched_total = len(result["unmatched_book"]) + len(result["unmatched_source"])
-
     content = (
         f"Matched {len(matches)} pair(s); {unmatched_total} unmatched, "
         f"{len(exceptions)} exception(s) classified."
@@ -94,7 +185,6 @@ def matching_node(state: ReconState) -> dict:
 
 def resolution_node(state: ReconState) -> dict:
     """B11: real exception escalation (B9) at the HITL gate.
-
     Runs whatever exceptions matching_node classified through B9's
     escalation logic: high-risk ones go to the shared review queue,
     low-risk ones are auto-resolved. Exceptions is empty for states that
@@ -104,7 +194,6 @@ def resolution_node(state: ReconState) -> dict:
     exceptions = state.get("exceptions", []) or []
     run_id = state.get("run_id", "unknown-run")
     summary = escalate_exceptions(exceptions, run_id=run_id)
-
     content = (
         f"Escalated {len(summary['escalated'])}, "
         f"auto-resolved {len(summary['auto_resolved'])} exception(s)."
@@ -114,13 +203,11 @@ def resolution_node(state: ReconState) -> dict:
 
 def consolidation_node(state: ReconState) -> dict:
     """C11 (partial) + C14: build the run-level ReconReport from real state.
-
     matched_count/unmatched_count/exceptions are real as of B11 whenever
     matching_node actually ran on real transactions. close_ready is
     computed here rather than trusted from the caller: a run isn't
     genuinely close-ready while exceptions remain unresolved, regardless
     of what a caller set on initial_state.
-
     C14: close_ready checks the live review_queue for this run_id, not
     just whether any exceptions were classified -- an auto-resolved
     exception (B9) never blocks close; an escalated one does until an
@@ -128,12 +215,6 @@ def consolidation_node(state: ReconState) -> dict:
     even across a resumed HITL run. This is what makes close_period()'s
     guard (recon_platform/hitl/close_gate.py) meaningful rather than a
     flag nobody enforces.
-
-    This is C11's B-side, not full C11 -- ingestion/validation/
-    normalization are still placeholders pending A11, so a real run
-    still needs book_transactions/source_transactions supplied directly
-    rather than derived from real source_configs. Once A11 lands, this
-    node's inputs become fully real with no changes needed here.
     """
     matched = state.get("matched_count", 0)
     unmatched = state.get("unmatched_count", 0)
@@ -142,7 +223,6 @@ def consolidation_node(state: ReconState) -> dict:
     match_rate = matched / total if total else 0.0
     run_id = state.get("run_id", "unknown-run")
     close_ready = len(pending_for_run(run_id)) == 0
-
     report = ReconReport(
         run_id=run_id,
         period=state.get("period", ""),
@@ -165,12 +245,10 @@ def consolidation_node(state: ReconState) -> dict:
 
 def learning_node(state: ReconState) -> dict:
     """C12: mine this run's matches into rule suggestions for approval.
-
     Persisted to the global rule_store by default (learning_agent's
     default). Once an analyst approves a suggestion (RuleStore.approve),
     the very next matching_node run picks it up automatically via
     apply_approved_rules -- no extra plumbing needed, closing the loop.
-
     Only reachable when close_ready (no exceptions this run, per
     consolidation_node), so exception-pattern mining never actually
     fires in today's graph flow -- that needs close_ready to mean
@@ -181,15 +259,12 @@ def learning_node(state: ReconState) -> dict:
     matches = state.get("match_results") or []
     exceptions = state.get("exceptions") or []
     suggestions = learning_agent(matches, exceptions)
-
     content = f"Learning: {len(suggestions)} rule suggestion(s) mined this run."
     return {"rule_suggestions": suggestions, "messages": [_log(MessageRole.LEARNING, content)]}
 
 
-
 def build_graph(checkpointer=None, interrupt_before: list[str] | None = None):
     """Assemble and compile the skeleton graph.
-
     checkpointer: pass a LangGraph checkpointer (e.g. SqliteSaver) to enable
         persistent, resumable state across process restarts. Omit for a
         stateless, non-resumable compile (used by earlier C3 tests).
@@ -197,7 +272,6 @@ def build_graph(checkpointer=None, interrupt_before: list[str] | None = None):
         interrupt/resume behavior.
     """
     graph = StateGraph(ReconState)
-
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("ingestion", ingestion_node)
     graph.add_node("validation", validation_node)
@@ -206,33 +280,25 @@ def build_graph(checkpointer=None, interrupt_before: list[str] | None = None):
     graph.add_node("resolution", resolution_node)
     graph.add_node("consolidation", consolidation_node)
     graph.add_node("learning", learning_node)
-
     graph.add_edge(START, "supervisor")
     graph.add_edge("supervisor", "ingestion")
     graph.add_edge("ingestion", "validation")
-
     graph.add_conditional_edges(
         "validation",
         validation_gate,
         {"resolution": "resolution", "normalization": "normalization", "ingestion": "ingestion"},
     )
-
     graph.add_edge("normalization", "matching")
-
     graph.add_conditional_edges(
         "matching",
         matched_gate,
         {"resolution": "resolution", "consolidation": "consolidation"},
     )
-
     graph.add_edge("resolution", "consolidation")
-
     graph.add_conditional_edges(
         "consolidation",
         close_ready_gate,
         {"learning": "learning", "end": END},
     )
-
     graph.add_edge("learning", END)
-
     return graph.compile(checkpointer=checkpointer, interrupt_before=interrupt_before)
