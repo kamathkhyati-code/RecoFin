@@ -6,7 +6,8 @@ from decimal import Decimal
 
 from datagents.agents.validation_agent import validate_transactions, validation_agent
 from datagents.schemas import SourceType, Transaction
-from datagents.tools.validation_tools import ReasonCode
+from datagents.tools.normalization_tools import FX_TO_USD
+from datagents.tools.validation_tools import SUPPORTED_CURRENCIES, ReasonCode
 from recon_platform.gateway.llm_gateway import MockLLMGateway
 
 
@@ -35,7 +36,6 @@ def test_deterministic_bad_rows_get_correct_reason_codes():
         _txn(txn_id="DUP"),  # first occurrence
         _txn(txn_id="DUP"),  # DUPLICATE_TXN on the second
         _txn(txn_id="ZERO", amount="0"),  # NON_POSITIVE_AMOUNT
-        _txn(txn_id="FX", currency="JPY"),  # UNSUPPORTED_CURRENCY
     ]
 
     findings = validate_transactions(txns)
@@ -47,8 +47,15 @@ def test_deterministic_bad_rows_get_correct_reason_codes():
     assert reasons_by_id.get("MISS") == {ReasonCode.MISSING_FIELD}
     assert reasons_by_id.get("DUP") == {ReasonCode.DUPLICATE_TXN}
     assert reasons_by_id.get("ZERO") == {ReasonCode.NON_POSITIVE_AMOUNT}
-    assert reasons_by_id.get("FX") == {ReasonCode.UNSUPPORTED_CURRENCY}
     assert "OK1" not in reasons_by_id
+
+
+def test_supported_currencies_stays_in_sync_with_fx_table():
+    # Regression guard: if normalization ever adds/removes a currency and
+    # this list is not derived from it, this test catches the drift
+    # immediately instead of silently flagging convertible currencies as
+    # unsupported (the real bug this replaced).
+    assert SUPPORTED_CURRENCIES == set(FX_TO_USD.keys())
 
 
 def test_ambiguous_row_ignored_without_gateway():
@@ -60,8 +67,6 @@ def test_ambiguous_row_ignored_without_gateway():
 
 
 def test_malformed_llm_verdict_is_caught_and_escalates():
-    # The LLM returns junk that doesn't fit LLMVerdict -> guard catches it ->
-    # we escalate to a human instead of guessing.
     txns = [_txn(txn_id="NOREF", reference=None)]
     gateway = MockLLMGateway(canned_response="totally not json")
 
