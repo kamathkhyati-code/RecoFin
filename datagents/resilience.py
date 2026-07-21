@@ -4,6 +4,11 @@ Source fetches can fail transiently (network blips, a momentarily unavailable
 API/SFTP). `with_retry` re-runs the callable on `FetchError` with exponential
 backoff, emits a structured log line per attempt, and re-raises the last error
 once attempts are exhausted. `sleep` is injectable so tests run instantly.
+
+A13: `attempts_out`, if given a list, gets the total attempt count appended
+to it once the call resolves (succeeds or exhausts retries) -- lets a caller
+(ingestion_agent) record retry metrics without with_retry needing to know
+anything about metrics/observability itself.
 """
 from __future__ import annotations
 
@@ -27,6 +32,7 @@ def with_retry(
     retries: int = 3,
     base_delay: float = 0.5,
     sleep: Callable[[float], None] = time.sleep,
+    attempts_out: list[int] | None = None,
 ) -> T:
     """Call `fn`, retrying on FetchError with exponential backoff.
 
@@ -37,7 +43,10 @@ def with_retry(
     attempt = 0
     while True:
         try:
-            return fn()
+            result = fn()
+            if attempts_out is not None:
+                attempts_out.append(attempt + 1)
+            return result
         except FetchError as exc:
             attempt += 1
             if attempt >= retries:
@@ -45,6 +54,8 @@ def with_retry(
                     "fetch_retry_exhausted",
                     extra={"attempt": attempt, "retries": retries, "error": str(exc)},
                 )
+                if attempts_out is not None:
+                    attempts_out.append(attempt)
                 raise
             delay = base_delay * (2 ** (attempt - 1))
             logger.warning(

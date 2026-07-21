@@ -13,6 +13,13 @@ split apart afterward. Callers supply `book_source_configs` and
 flat `source_configs` list. Validation still runs on the combined set,
 since cross-source checks (e.g. dedupe) need to see both sides at once.
 
+A13: ingestion_node now also records per-source ToolSpan metrics (rows
+in/out, retry attempts, duration, status) via ingest_sources_with_metrics
+and surfaces them as ingestion_metrics. Note: ReconState doesn't declare
+this key yet, so it won't survive a full graph.invoke() until that's added
+(LangGraph drops any key not declared in the state schema) -- flagged
+separately, not something to fix here.
+
 C4 adds: optional checkpointer for persistent, resumable state, and
 optional interrupt_before for pausing execution mid-run.
 """
@@ -20,7 +27,7 @@ from __future__ import annotations
 
 from langgraph.graph import StateGraph, START, END
 
-from datagents.agents.ingestion_agent import ingest_sources
+from datagents.agents.ingestion_agent import ingest_sources_with_metrics
 from datagents.agents.normalization_agent import normalize_transactions
 from datagents.agents.validation_agent import validate_transactions
 from datagents.tools.alias_store import AliasStore
@@ -69,12 +76,18 @@ def ingestion_node(state: ReconState) -> dict:
             "messages": [_log(MessageRole.INGESTION, "Data ingested.")],
         }
 
-    book_result = ingest_sources(book_configs or [])
-    bank_result = ingest_sources(bank_configs or [])
+    book_result, book_spans = ingest_sources_with_metrics(book_configs or [])
+    bank_result, bank_spans = ingest_sources_with_metrics(bank_configs or [])
 
     transactions = list(book_result.transactions) + list(bank_result.transactions)
     new_issues = list(book_result.issues) + list(bank_result.issues)
     combined_issues = list(state.get("issues", [])) + new_issues
+    # A13: append rather than overwrite, since ingestion can re-run via the
+    # retry loop (validation_gate -> ingestion) -- each attempt's metrics
+    # should stay visible, not just the last one.
+    combined_metrics = list(state.get("ingestion_metrics", [])) + [
+        s.as_dict() for s in book_spans + bank_spans
+    ]
 
     content = (
         f"Ingested {len(book_result.transactions)} book txn(s), "
@@ -85,6 +98,7 @@ def ingestion_node(state: ReconState) -> dict:
         "source_transactions": bank_result.transactions,
         "transactions": transactions,
         "issues": combined_issues,
+        "ingestion_metrics": combined_metrics,
         "retry_count": state.get("retry_count", 0) + 1,
         "messages": [_log(MessageRole.INGESTION, content)],
     }
