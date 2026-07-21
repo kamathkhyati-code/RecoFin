@@ -19,6 +19,7 @@ from reasoning.agents.exception_escalation import escalate_exceptions
 from reasoning.agents.learning_agent import learning_agent
 from reasoning.match_subgraph import run_match_subgraph
 from reasoning.schemas import ReconReport
+from recon_platform.hitl.review_queue import pending_for_run
 from recon_platform.state import ReconState, AgentMessage, MessageRole
 from recon_platform.graph.routing import validation_gate, matched_gate, close_ready_gate
 
@@ -112,7 +113,7 @@ def resolution_node(state: ReconState) -> dict:
 
 
 def consolidation_node(state: ReconState) -> dict:
-    """C11 (partial): build the run-level ReconReport from real B-side state.
+    """C11 (partial) + C14: build the run-level ReconReport from real state.
 
     matched_count/unmatched_count/exceptions are real as of B11 whenever
     matching_node actually ran on real transactions. close_ready is
@@ -120,23 +121,30 @@ def consolidation_node(state: ReconState) -> dict:
     genuinely close-ready while exceptions remain unresolved, regardless
     of what a caller set on initial_state.
 
-    This is C11's B-side: real matching/exception/consolidation data
-    flowing correctly end-to-end. It is NOT full C11 -- ingestion/
-    validation/normalization are still placeholders pending A11, so a
-    real run still needs book_transactions/source_transactions supplied
-    directly rather than derived from real source_configs. Once A11
-    lands, this node's inputs become fully real with no changes needed
-    here.
+    C14: close_ready checks the live review_queue for this run_id, not
+    just whether any exceptions were classified -- an auto-resolved
+    exception (B9) never blocks close; an escalated one does until an
+    analyst resolves it (resolve_exception / review_queue.mark_resolved),
+    even across a resumed HITL run. This is what makes close_period()'s
+    guard (recon_platform/hitl/close_gate.py) meaningful rather than a
+    flag nobody enforces.
+
+    This is C11's B-side, not full C11 -- ingestion/validation/
+    normalization are still placeholders pending A11, so a real run
+    still needs book_transactions/source_transactions supplied directly
+    rather than derived from real source_configs. Once A11 lands, this
+    node's inputs become fully real with no changes needed here.
     """
     matched = state.get("matched_count", 0)
     unmatched = state.get("unmatched_count", 0)
     exceptions = state.get("exceptions", []) or []
     total = matched + unmatched
     match_rate = matched / total if total else 0.0
-    close_ready = len(exceptions) == 0
+    run_id = state.get("run_id", "unknown-run")
+    close_ready = len(pending_for_run(run_id)) == 0
 
     report = ReconReport(
-        run_id=state.get("run_id", "unknown-run"),
+        run_id=run_id,
         period=state.get("period", ""),
         matched_count=matched,
         unmatched_count=unmatched,
