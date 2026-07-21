@@ -17,6 +17,7 @@ from langgraph.graph import StateGraph, START, END
 
 from reasoning.agents.exception_escalation import escalate_exceptions
 from reasoning.match_subgraph import run_match_subgraph
+from reasoning.schemas import ReconReport
 from recon_platform.state import ReconState, AgentMessage, MessageRole
 from recon_platform.graph.routing import validation_gate, matched_gate, close_ready_gate
 
@@ -30,7 +31,19 @@ def supervisor_node(state: ReconState) -> dict:
 
 
 def ingestion_node(state: ReconState) -> dict:
-    return {"messages": [_log(MessageRole.INGESTION, "Data ingested.")]}
+    """Still a placeholder pending A11's real ingestion_agent wiring.
+
+    Increments retry_count regardless: validation_gate reads retry_count
+    to decide when a genuinely critical (batch-level) validation issue
+    has exhausted its retries and should escalate to resolution instead
+    of looping ingestion<->validation forever. Nothing else in the graph
+    ever increments it, so this has to happen here -- A11's real
+    ingestion_node must keep this line when it replaces this placeholder.
+    """
+    return {
+        "retry_count": state.get("retry_count", 0) + 1,
+        "messages": [_log(MessageRole.INGESTION, "Data ingested.")],
+    }
 
 
 def validation_node(state: ReconState) -> dict:
@@ -98,7 +111,47 @@ def resolution_node(state: ReconState) -> dict:
 
 
 def consolidation_node(state: ReconState) -> dict:
-    return {"messages": [_log(MessageRole.CONSOLIDATION, "Consolidation complete.")]}
+    """C11 (partial): build the run-level ReconReport from real B-side state.
+
+    matched_count/unmatched_count/exceptions are real as of B11 whenever
+    matching_node actually ran on real transactions. close_ready is
+    computed here rather than trusted from the caller: a run isn't
+    genuinely close-ready while exceptions remain unresolved, regardless
+    of what a caller set on initial_state.
+
+    This is C11's B-side: real matching/exception/consolidation data
+    flowing correctly end-to-end. It is NOT full C11 -- ingestion/
+    validation/normalization are still placeholders pending A11, so a
+    real run still needs book_transactions/source_transactions supplied
+    directly rather than derived from real source_configs. Once A11
+    lands, this node's inputs become fully real with no changes needed
+    here.
+    """
+    matched = state.get("matched_count", 0)
+    unmatched = state.get("unmatched_count", 0)
+    exceptions = state.get("exceptions", []) or []
+    total = matched + unmatched
+    match_rate = matched / total if total else 0.0
+    close_ready = len(exceptions) == 0
+
+    report = ReconReport(
+        run_id=state.get("run_id", "unknown-run"),
+        period=state.get("period", ""),
+        matched_count=matched,
+        unmatched_count=unmatched,
+        exception_count=len(exceptions),
+        match_rate=match_rate,
+        close_ready=close_ready,
+    )
+    content = (
+        f"Consolidated: {report.matched_count} matched, "
+        f"{report.exception_count} exception(s), close_ready={close_ready}."
+    )
+    return {
+        "report": report,
+        "close_ready": close_ready,
+        "messages": [_log(MessageRole.CONSOLIDATION, content)],
+    }
 
 
 def learning_node(state: ReconState) -> dict:

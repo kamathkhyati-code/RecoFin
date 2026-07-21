@@ -67,6 +67,7 @@ class ReconState(TypedDict, total=False):
     matched_count: int
     unmatched_count: int
     close_ready: bool
+    retry_count: int
 
     # Data-agent state (A track)
     source_configs: list[Any]
@@ -81,3 +82,6 @@ class ReconState(TypedDict, total=False):
     unmatched_book: list[Any]
     unmatched_source: list[Any]
     exceptions: list[Any]
+
+    # Consolidation state (C track, C11)
+    report: Any
