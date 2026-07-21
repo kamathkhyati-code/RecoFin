@@ -5,7 +5,9 @@ deterministic matching (B4), optional LLM escalation on the leftovers (B5),
 hallucination-guarded confidence calibration against match memory (B6/B7),
 and exception classification + risk scoring on whatever is still unmatched
 (B8) - proving the pieces compose correctly on real state before the real
-LangGraph wiring happens at integration (B11).
+LangGraph wiring happens at integration (B11). When a memory store is
+supplied, this run's confirmed matches are upserted back into it (B13),
+so the memory grows from its own history run over run.
 """
 
 from __future__ import annotations
@@ -62,6 +64,16 @@ def run_match_subgraph(
         matches = matches + semantic_matches
 
     matches = calibrate_matches(matches, book, source, memory=memory)
+
+    if memory is not None:
+        # B13: grow the memory with this run's confirmed matches, so a
+        # later run of the same or a similar pair gets calibration
+        # support from its own history, not just whatever was seeded in.
+        book_by_id = {t.txn_id: t for t in book}
+        source_by_id = {t.txn_id: t for t in source}
+        for match in matches:
+            memory.upsert_match(book_by_id[match.book_txn_id], source_by_id[match.source_txn_id], match)
+
     exceptions = exception_agent(unmatched_book, unmatched_source)
 
     working["match_results"] = matches

@@ -120,3 +120,36 @@ def test_c12_approved_widen_tolerance_applies_on_next_run():
     tolerance_matches = [m for m in result_after["match_results"] if m.rule == "tolerance"]
     assert len(tolerance_matches) == 1
     assert tolerance_matches[0].book_txn_id == "B1"
+
+
+def test_b13_memory_grows_from_its_own_prior_matches():
+    """B13: matches upsert automatically; a later identical run is boosted
+    by its own history, without anything manually pre-seeding memory.
+
+    Uses a unique collection_name: MatchMemory's default collection name
+    is shared/persistent within a process by design (one growing memory
+    for the whole system in production), which would otherwise leak
+    state in from other tests in the same pytest session.
+    """
+    book = [_txn("B2", "200.00", "PAY-2", day=5)]
+    source = [_txn("S2", "200.03", "PAY-2X", day=6)]
+    memory = MatchMemory(collection_name="test_b13_growth")
+    state = {"book_transactions": book, "source_transactions": source}
+
+    first = run_match_subgraph(dict(state), memory=memory)
+    raw_confidence = next(m.confidence for m in first["match_results"] if m.book_txn_id == "B2")
+
+    second = run_match_subgraph(dict(state), memory=memory)
+    grown_confidence = next(m.confidence for m in second["match_results"] if m.book_txn_id == "B2")
+
+    assert grown_confidence > raw_confidence
+
+
+def test_b13_memory_not_grown_when_no_memory_supplied():
+    """No memory store means no growth attempted -- must not error."""
+    book = [_txn("B2", "200.00", "PAY-2", day=5)]
+    source = [_txn("S2", "200.03", "PAY-2X", day=6)]
+    state = {"book_transactions": book, "source_transactions": source}
+
+    result = run_match_subgraph(dict(state))
+    assert any(m.book_txn_id == "B2" for m in result["match_results"])
