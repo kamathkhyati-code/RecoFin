@@ -1,4 +1,4 @@
-"""Shared graph state and message contracts for the Agentic Recon system."""
+﻿"""Shared graph state and message contracts for the Agentic Recon system."""
 
 from __future__ import annotations
 
@@ -47,17 +47,29 @@ def _append_messages(left: list[AgentMessage], right: list[AgentMessage]) -> lis
 class ReconState(TypedDict, total=False):
     """Shared LangGraph state passed between all agent nodes.
 
-    Declared here for documentation/type-safety only; TypedDict isn't
-    enforced at runtime, so a node writing an undeclared key still works.
+    Every key a node needs to read or write must be declared here.
+    Correction (A13): the class docstring previously claimed a node could
+    write an undeclared key and it would "still work" -- that's true for a
+    plain dict, but NOT for a compiled StateGraph(ReconState): LangGraph
+    builds one channel per schema field, and silently drops any key a node
+    returns (or any key on the initial input state) that isn't declared
+    here. Confirmed empirically while wiring A13's ingestion_metrics, which
+    surfaced a second, more serious instance of the same gap:
+    book_source_configs/bank_source_configs (A11) had never been declared
+    either, so the real configs-driven ingestion path silently never ran
+    through an actual graph.invoke() call, even though every existing test
+    passed (none of them exercised that exact path end-to-end).
     Kept as `Any` rather than importing datagents/reasoning types directly,
     since recon_platform is the shared platform layer both packages depend
     on, not the other way around.
 
     data-agent fields (A10/A11): transactions, source_configs,
-    normalized_transactions, validation_findings.
+    book_source_configs, bank_source_configs, normalized_transactions,
+    validation_findings.
     matching/exception fields (B10/B11): book_transactions,
     source_transactions, match_results, unmatched_book, unmatched_source,
     exceptions.
+    ingestion observability (A13): ingestion_metrics.
     """
 
     run_id: str
@@ -71,6 +83,8 @@ class ReconState(TypedDict, total=False):
 
     # Data-agent state (A track)
     source_configs: list[Any]
+    book_source_configs: list[Any]
+    bank_source_configs: list[Any]
     transactions: list[Any]
     validation_findings: list[Any]
     normalized_transactions: list[Any]
@@ -82,6 +96,9 @@ class ReconState(TypedDict, total=False):
     unmatched_book: list[Any]
     unmatched_source: list[Any]
     exceptions: list[Any]
+
+    # Ingestion observability (A13)
+    ingestion_metrics: list[Any]
 
     # Consolidation state (C track, C11)
     report: Any

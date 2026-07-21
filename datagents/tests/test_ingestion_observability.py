@@ -124,30 +124,40 @@ def test_ingestion_agent_surfaces_metrics_on_state(tmp_path):
     assert update["ingestion_metrics"][0]["rows_out"] == 1
 
 
-def test_ingestion_node_itself_returns_metrics_for_book_and_bank(tmp_path):
-    """Proves ingestion_node's own return value carries ingestion_metrics
-    correctly for both book and bank sources.
+def test_real_graph_run_ingests_from_configs_and_matches_end_to_end(tmp_path):
+    """A13's acceptance criterion, for real this time: run the actual
+    compiled graph (build_graph().invoke(), not a direct node call) with
+    book_source_configs/bank_source_configs and confirm ingestion,
+    matching, and ingestion_metrics all come out the other end correctly.
 
-    Deliberately calls ingestion_node directly rather than through
-    build_graph().invoke(): LangGraph's StateGraph(ReconState) only tracks
-    keys declared in the ReconState TypedDict schema and silently drops
-    anything else a node returns (confirmed empirically -- an undeclared
-    key never reaches the final state, even though the node returned it).
-    ReconState doesn't declare "ingestion_metrics" yet, so a full graph.invoke()
-    test would currently fail to see this key downstream even though
-    ingestion_node is producing it correctly. That's a one-line addition to
-    recon_platform/state.py (Khyati's file, same one she extended for A9/A10's
-    transactions/source_configs) -- not something to change unilaterally here.
+    History: this test originally called ingestion_node() directly because
+    ReconState didn't declare "ingestion_metrics", and LangGraph silently
+    drops any state key a node returns that isn't in the schema. While
+    fixing that, a second, more serious version of the same gap turned up:
+    book_source_configs/bank_source_configs -- the two state keys A11
+    itself introduced -- were ALSO never added to ReconState. That meant
+    the compiled graph silently dropped them from the INPUT state before
+    ingestion_node ever ran, so it fell back to its synthetic-test
+    pass-through branch, book_transactions/source_transactions stayed
+    empty, and matching never happened -- yet every existing test still
+    passed, because none of them exercised the real configs-driven path
+    through an actual graph.invoke() call. All three keys
+    (book_source_configs, bank_source_configs, ingestion_metrics) are now
+    declared in ReconState; this test locks in that the real path
+    genuinely works end-to-end, not just at the individual-function level.
     """
-    from recon_platform.graph.build import ingestion_node
+    from recon_platform.graph.build import build_graph
 
     book = tmp_path / "book.csv"
     book.write_text(_HEADER + "B1,2026-01-01,100.00,USD,ACME,INV-1\n")
     bank = tmp_path / "bank.csv"
     bank.write_text(_HEADER + "S1,2026-01-01,100.00,USD,ACME,INV-1\n")
 
-    state = {
-        "run_id": "a13-metrics-test",
+    graph = build_graph()
+    result = graph.invoke({
+        "run_id": "a13-e2e-test",
+        "period": "2026-06",
+        "messages": [],
         "issues": [],
         "book_source_configs": [
             SourceConfig(name="book", source_type=SourceType.CSV, location=str(book)),
@@ -155,14 +165,18 @@ def test_ingestion_node_itself_returns_metrics_for_book_and_bank(tmp_path):
         "bank_source_configs": [
             SourceConfig(name="bank", source_type=SourceType.CSV, location=str(bank)),
         ],
-    }
+    })
 
-    update = ingestion_node(state)
+    assert [t.txn_id for t in result["book_transactions"]] == ["B1"]
+    assert [t.txn_id for t in result["source_transactions"]] == ["S1"]
+    assert result["matched_count"] == 1
+    assert result["report"].matched_count == 1
+    assert result["close_ready"] is True
 
-    assert "ingestion_metrics" in update
-    sources = {m["source_name"] for m in update["ingestion_metrics"]}
+    assert "ingestion_metrics" in result
+    sources = {m["source_name"] for m in result["ingestion_metrics"]}
     assert sources == {"book", "bank"}
-    for m in update["ingestion_metrics"]:
+    for m in result["ingestion_metrics"]:
         assert m["rows_out"] == 1
         assert m["retry_attempts"] == 1
         assert m["status"] == "ok"
