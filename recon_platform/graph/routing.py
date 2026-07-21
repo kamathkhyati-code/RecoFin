@@ -10,7 +10,23 @@ MAX_VALIDATION_RETRIES = 2
 
 
 def _has_critical_issue(issues) -> bool:
-    return any(getattr(issue, "severity", None) == "error" for issue in issues)
+    """A run-blocking issue: error severity with no row_ref.
+
+    row_ref is set for a specific row's problem (a malformed CSV row, a
+    rejected validation finding) -- expected noise in any real dataset,
+    already excluded/flagged by the agent that found it, and not
+    something re-ingesting the whole batch fixes. row_ref is None for a
+    batch-level failure (source unreachable, file not found) -- exactly
+    what the retry-then-escalate loop below exists for. Without this
+    distinction, a single malformed row anywhere in the batch would
+    retry ingestion twice (pointlessly -- the bad row is still bad) and
+    then escalate the entire run to human review, blocking every clean
+    row along with it.
+    """
+    return any(
+        getattr(issue, "severity", None) == "error" and getattr(issue, "row_ref", None) is None
+        for issue in issues
+    )
 
 
 def validation_gate(state: dict) -> str:
