@@ -1,4 +1,4 @@
-﻿"""Tests for the A6 Validation Agent and its deterministic checks."""
+﻿"""Tests for the A6/A7 Validation Agent, checks, and guardrailed LLM verdict."""
 from __future__ import annotations
 
 from datetime import date
@@ -6,7 +6,8 @@ from decimal import Decimal
 
 from datagents.agents.validation_agent import validate_transactions, validation_agent
 from datagents.schemas import SourceType, Transaction
-from datagents.tools.validation_tools import ReasonCode
+from datagents.tools.normalization_tools import FX_TO_USD
+from datagents.tools.validation_tools import SUPPORTED_CURRENCIES, ReasonCode
 from recon_platform.gateway.llm_gateway import MockLLMGateway
 
 
@@ -35,7 +36,6 @@ def test_deterministic_bad_rows_get_correct_reason_codes():
         _txn(txn_id="DUP"),  # first occurrence
         _txn(txn_id="DUP"),  # DUPLICATE_TXN on the second
         _txn(txn_id="ZERO", amount="0"),  # NON_POSITIVE_AMOUNT
-        _txn(txn_id="FX", currency="JPY"),  # UNSUPPORTED_CURRENCY
     ]
 
     findings = validate_transactions(txns)
@@ -47,9 +47,15 @@ def test_deterministic_bad_rows_get_correct_reason_codes():
     assert reasons_by_id.get("MISS") == {ReasonCode.MISSING_FIELD}
     assert reasons_by_id.get("DUP") == {ReasonCode.DUPLICATE_TXN}
     assert reasons_by_id.get("ZERO") == {ReasonCode.NON_POSITIVE_AMOUNT}
-    assert reasons_by_id.get("FX") == {ReasonCode.UNSUPPORTED_CURRENCY}
-    # 100% precision: the clean row is never flagged
     assert "OK1" not in reasons_by_id
+
+
+def test_supported_currencies_stays_in_sync_with_fx_table():
+    # Regression guard: if normalization ever adds/removes a currency and
+    # this list is not derived from it, this test catches the drift
+    # immediately instead of silently flagging convertible currencies as
+    # unsupported (the real bug this replaced).
+    assert SUPPORTED_CURRENCIES == set(FX_TO_USD.keys())
 
 
 def test_ambiguous_row_ignored_without_gateway():
@@ -60,15 +66,39 @@ def test_ambiguous_row_ignored_without_gateway():
     assert findings == []
 
 
-def test_ambiguous_row_uses_llm_when_gateway_present():
+def test_malformed_llm_verdict_is_caught_and_escalates():
     txns = [_txn(txn_id="NOREF", reference=None)]
-    gateway = MockLLMGateway(canned_response="review")
+    gateway = MockLLMGateway(canned_response="totally not json")
 
     findings = validate_transactions(txns, gateway=gateway)
 
     assert len(findings) == 1
     assert findings[0].reason == ReasonCode.AMBIGUOUS
-    assert "review" in findings[0].detail
+    assert findings[0].escalate is True
+
+
+def test_review_verdict_sets_escalation():
+    txns = [_txn(txn_id="NOREF", reference=None)]
+    gateway = MockLLMGateway(
+        canned_response='{"verdict": "review", "confidence": 0.9, "reason": "no ref"}'
+    )
+
+    findings = validate_transactions(txns, gateway=gateway)
+
+    assert len(findings) == 1
+    assert findings[0].escalate is True
+
+
+def test_confident_ok_verdict_does_not_escalate():
+    txns = [_txn(txn_id="NOREF", reference=None)]
+    gateway = MockLLMGateway(
+        canned_response='{"verdict": "ok", "confidence": 0.95, "reason": "looks fine"}'
+    )
+
+    findings = validate_transactions(txns, gateway=gateway)
+
+    assert len(findings) == 1
+    assert findings[0].escalate is False
 
 
 def test_validation_agent_node_emits_issues():

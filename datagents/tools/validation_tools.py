@@ -1,19 +1,24 @@
-﻿"""Validation tools (A6) — deterministic checks that flag bad transactions.
+﻿"""Validation tools (A6) - deterministic checks that flag bad transactions.
 
 Each tool takes the batch of transactions and returns a list of findings, one
-per problem, tagged with a machine-readable ReasonCode.
+per problem, tagged with a machine-readable ReasonCode. A7 adds the LLMVerdict
+schema and an `escalate` flag used by the guardrailed AI fallback.
 """
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from datagents.schemas import Currency, Transaction
+from datagents.schemas import Transaction
+from datagents.tools.normalization_tools import FX_TO_USD
 from recon_platform.registry import registry
 
-# Currencies we can actually reconcile / FX-convert in the POC.
-SUPPORTED_CURRENCIES = {Currency.USD, Currency.EUR, Currency.GBP}
+# Currencies we can actually reconcile / FX-convert. Derived from
+# normalization's FX_TO_USD table (not a separate hardcoded list) so this
+# can never silently drift out of sync with what normalization supports.
+SUPPORTED_CURRENCIES = set(FX_TO_USD.keys())
 
 
 class ReasonCode(str, Enum):
@@ -32,6 +37,15 @@ class ValidationFinding(BaseModel):
     txn_id: str
     reason: ReasonCode
     detail: str
+    escalate: bool = False
+
+
+class LLMVerdict(BaseModel):
+    """Strict shape the LLM must return for an ambiguous-row judgment."""
+
+    verdict: Literal["ok", "review"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str
 
 
 @registry.register(

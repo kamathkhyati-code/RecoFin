@@ -1,0 +1,12 @@
+﻿transaction_id,value_date,amount,ccy,counterparty,reference
+S01,2026-02-01,1500.00,USD,ACME Corp,inv-2001
+S02,2026-02-02,2300.50,EUR,Globex,inv-2002
+S03,2026-02-03,900.00,GBP,Initech,inv-2003
+S05,2026-02-05,825.00,USD,Wayne Enterprises,inv-2005
+S06,2026-02-06,3100.00,USD,Stark Industries,inv-2006
+S07,2026-02-07,1250.75,USD,Hooli,inv-2007
+S08,2026-02-08,600.00,USD,Wonka Inc,inv-2008
+S09,2026-02-09,5000.00,USD,ACME-UK,inv-2009
+S11,2026-02-11,999.00,USD,Pied Piper,inv-2099
+S12,2026-02-12,not_a_number,USD,BadAmount,inv-2098
+S13,2026-02-13,450.00,ZZZ,BadCurrency,inv-2097
