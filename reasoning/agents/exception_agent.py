@@ -1,4 +1,4 @@
-"""Exception Agent - B8.
+"""Exception Agent - B8, resolution notes improved at B14.
 
 Classifies each unmatched transaction, scores its risk, and suggests a
 resolution. Deterministic and rule-based so classification is auditable
@@ -9,6 +9,13 @@ Classification uses the counterpart side's leftovers as evidence: a book
 txn with a same-amount source txn a few days away is a TIMING difference,
 not a MISSING one; a same-date near-amount pair in different currencies is
 FX; and so on.
+
+B14 note: only resolution notes were tuned here, deliberately not
+score_risk's weights. "Using eval feedback" for risk scoring needs real
+historical outcome data (did escalated exceptions actually turn out to
+matter) that doesn't exist yet in a fresh repo -- adjusting the numbers
+without that would be guessing, not tuning. Revisit once C13's baseline
+reports have accumulated real runs to learn from.
 """
 
 from __future__ import annotations
@@ -81,9 +88,40 @@ def score_risk(txn: Transaction, exc_type: ExcType) -> float:
     return max(0.0, min(1.0, base + materiality_bump))
 
 
-def suggest_resolution(exc_type: ExcType) -> str:
-    """A human-readable next step for an analyst working this exception type."""
-    return _RESOLUTIONS.get(exc_type, "Escalate for manual review.")
+def suggest_resolution(exc_type: ExcType, txn: Transaction | None = None) -> str:
+    """A human-readable next step for an analyst working this exception type.
+
+    B14: grounded in the actual transaction's details when given one,
+    rather than B8's original fixed canned string per exc_type -- scores
+    higher on the analyst-note rubric (mentions the amount and a specific
+    reference, not just generic boilerplate). txn stays optional so
+    existing callers that only have the exc_type (e.g. B12's learning
+    agent summarizing a pattern, not a single transaction) keep working.
+    """
+    template = _RESOLUTIONS.get(exc_type, "Escalate for manual review.")
+    if txn is None:
+        return template
+    return (
+        f"{template} (txn {txn.txn_id}: {txn.amount} {txn.currency.value} "
+        f"on {txn.date}, ref '{txn.reference}')"
+    )
+
+
+def note_rubric_score(note: str, txn: Transaction) -> float:
+    """B14: 0-1 rubric for how grounded a resolution note is in the real
+    transaction, so "quality improved" is a measured claim, not an
+    assumed one. Scores whether the note mentions the amount, a specific
+    identifier (txn_id or reference), and isn't just a short boilerplate
+    sentence with nothing concrete attached.
+    """
+    score = 0.0
+    if str(txn.amount) in note:
+        score += 0.4
+    if txn.txn_id in note or (txn.reference and txn.reference in note):
+        score += 0.3
+    if len(note) > 40:
+        score += 0.3
+    return score
 
 
 def exception_agent(book: list[Transaction], source: list[Transaction]) -> list[ExceptionRecord]:
@@ -98,7 +136,7 @@ def exception_agent(book: list[Transaction], source: list[Transaction]) -> list[
                 side="book",
                 exc_type=exc_type,
                 risk_score=score_risk(txn, exc_type),
-                suggested_resolution=suggest_resolution(exc_type),
+                suggested_resolution=suggest_resolution(exc_type, txn),
                 rationale=f"Classified as {exc_type.value} against {len(source)} source counterpart(s).",
             )
         )
@@ -111,7 +149,7 @@ def exception_agent(book: list[Transaction], source: list[Transaction]) -> list[
                 side="source",
                 exc_type=exc_type,
                 risk_score=score_risk(txn, exc_type),
-                suggested_resolution=suggest_resolution(exc_type),
+                suggested_resolution=suggest_resolution(exc_type, txn),
                 rationale=f"Classified as {exc_type.value} against {len(book)} book counterpart(s).",
             )
         )

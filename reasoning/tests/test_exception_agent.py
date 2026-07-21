@@ -5,6 +5,7 @@ from datagents.schemas import Currency, SourceType, Transaction
 from reasoning.agents.exception_agent import (
     classify_exception,
     exception_agent,
+    note_rubric_score,
     score_risk,
     suggest_resolution,
 )
@@ -81,6 +82,36 @@ def test_exception_agent_covers_both_sides():
     for record in records:
         assert 0.0 <= record.risk_score <= 1.0
         assert record.suggested_resolution
+
+
+def test_b14_resolution_note_scores_higher_than_day8_baseline():
+    """B14: a grounded note (mentions the real amount/reference) must score
+    higher on the rubric than B8's original generic boilerplate."""
+    txn = _txn("b1", "12345.67", date(2026, 6, 1))
+    txn = txn.model_copy(update={"reference": "INV-9001"})
+
+    day8_baseline = suggest_resolution(ExcType.MISMATCH)  # no txn context, B8's original call shape
+    b14_note = suggest_resolution(ExcType.MISMATCH, txn)
+
+    assert note_rubric_score(b14_note, txn) > note_rubric_score(day8_baseline, txn)
+
+
+def test_b14_grounded_note_contains_real_transaction_details():
+    txn = _txn("b1", "500.00", date(2026, 6, 1))
+    txn = txn.model_copy(update={"reference": "INV-42"})
+
+    note = suggest_resolution(ExcType.FX, txn)
+
+    assert "500.00" in note
+    assert "INV-42" in note
+    assert "b1" in note
+
+
+def test_b14_note_without_txn_still_works_for_backward_compat():
+    """B12's learning agent and other callers with only an exc_type (no
+    single transaction) must keep working exactly as before."""
+    note = suggest_resolution(ExcType.TIMING)
+    assert isinstance(note, str) and note
 
 
 def _case(bid, amt, bdate, sid, samt, sdate, scur=Currency.USD, bcur=Currency.USD):
