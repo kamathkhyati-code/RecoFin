@@ -10,4 +10,4 @@ jobs:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
       - run: ruff check .
-      - run: pytest tests/ -v
+      - run: pytest datagents/ reasoning/ tests/ -v
