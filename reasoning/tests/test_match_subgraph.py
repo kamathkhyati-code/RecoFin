@@ -8,7 +8,8 @@ from decimal import Decimal
 from datagents.schemas import Currency, SourceType, Transaction
 from reasoning.match_subgraph import run_match_subgraph
 from reasoning.memory.match_memory import MatchMemory
-from reasoning.schemas import MatchResult, MatchType
+from reasoning.rule_store import RuleStore
+from reasoning.schemas import MatchResult, MatchType, RuleSuggestion
 
 
 def _txn(txn_id, amount, ref, day=1):
@@ -94,3 +95,28 @@ def test_match_subgraph_with_memory_boosts_confidence_on_known_pair():
     raw = next(m.confidence for m in result_without_memory["match_results"] if m.book_txn_id == "B2")
     calibrated = next(m.confidence for m in result_with_memory["match_results"] if m.book_txn_id == "B2")
     assert calibrated > raw
+
+
+def test_c12_approved_widen_tolerance_applies_on_next_run():
+    """The closed learning loop (C12): approve a rule, next run reflects it."""
+    book = [_txn("B1", "100.00", "INV-1", day=1)]
+    source = [_txn("S1", "100.07", "INV-1", day=1)]  # delta 0.07 > default amount_tol 0.05
+    store = RuleStore()
+    state = {"book_transactions": book, "source_transactions": source}
+
+    result_before = run_match_subgraph(dict(state), rule_store=store)
+    assert not any(m.rule == "tolerance" for m in result_before["match_results"])
+
+    item = store.add(
+        RuleSuggestion(
+            rule_type="widen_tolerance",
+            description="widen to cover observed delta",
+            suggested_params={"amount_tol": "0.10"},
+        )
+    )
+    store.approve(item.item_id)
+
+    result_after = run_match_subgraph(dict(state), rule_store=store)
+    tolerance_matches = [m for m in result_after["match_results"] if m.rule == "tolerance"]
+    assert len(tolerance_matches) == 1
+    assert tolerance_matches[0].book_txn_id == "B1"

@@ -19,18 +19,27 @@ _STRATEGY_NAMES = ("exact_tool", "tolerance_tool", "fuzzy_tool")
 
 
 def run_matching(
-    book: list[Transaction], source: list[Transaction]
+    book: list[Transaction],
+    source: list[Transaction],
+    *,
+    tool_config: dict[str, dict] | None = None,
 ) -> tuple[list[MatchResult], list[Transaction], list[Transaction]]:
-    """Match book vs source strongest-first; return matches + leftovers."""
+    """Match book vs source strongest-first; return matches + leftovers.
+
+    tool_config optionally overrides a strategy tool's default kwargs,
+    e.g. {"tolerance_tool": {"amount_tol": Decimal("0.08")}} -- how C12
+    applies approved learning-agent rule suggestions to live matching.
+    """
     remaining_book = list(book)
     remaining_source = list(source)
     matches: list[MatchResult] = []
+    tool_config = tool_config or {}
 
     for name in _STRATEGY_NAMES:
         if not remaining_book or not remaining_source:
             break
         strategy = registry.get(name).func
-        found = strategy(remaining_book, remaining_source)
+        found = strategy(remaining_book, remaining_source, **tool_config.get(name, {}))
         if not found:
             continue
         matches.extend(found)

@@ -85,3 +85,6 @@ class ReconState(TypedDict, total=False):
 
     # Consolidation state (C track, C11)
     report: Any
+
+    # Learning loop state (B12/C12)
+    rule_suggestions: list[Any]

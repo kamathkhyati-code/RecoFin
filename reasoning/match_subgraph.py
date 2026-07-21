@@ -16,8 +16,10 @@ from datagents.schemas import Transaction
 from recon_platform.gateway.llm_gateway import LLMGateway
 from reasoning.agents.calibrated_matcher import calibrate_matches
 from reasoning.agents.exception_agent import exception_agent
+from reasoning.agents.learning_agent import apply_approved_rules
 from reasoning.agents.matching_agent import run_matching
 from reasoning.agents.semantic_match_agent import semantic_match
+from reasoning.rule_store import RuleStore
 
 if TYPE_CHECKING:
     # Type-only: importing chromadb (via MatchMemory) is expensive and
@@ -30,6 +32,7 @@ def run_match_subgraph(
     *,
     gateway: LLMGateway | None = None,
     memory: MatchMemory | None = None,
+    rule_store: RuleStore | None = None,
 ) -> dict[str, Any]:
     """Run matching -> exception classification in sequence on `state`.
 
@@ -37,12 +40,18 @@ def run_match_subgraph(
     and exceptions. LLM escalation only runs if a gateway is supplied; memory
     calibration only runs if a memory store is supplied, so the sub-graph is
     fully testable on deterministic golden data alone.
+
+    C12: matching tool config is resolved from rule_store's approved
+    RuleSuggestions (widen_tolerance, lower_fuzzy_threshold), defaulting
+    to the global rule store -- so approving a suggestion after one run
+    automatically applies it on the next, with no extra plumbing needed.
     """
     working: dict[str, Any] = dict(state)
     book: list[Transaction] = working.get("book_transactions", []) or []
     source: list[Transaction] = working.get("source_transactions", []) or []
 
-    matches, unmatched_book, unmatched_source = run_matching(book, source)
+    tool_config = apply_approved_rules(rule_store)
+    matches, unmatched_book, unmatched_source = run_matching(book, source, tool_config=tool_config)
 
     if gateway is not None and unmatched_book and unmatched_source:
         semantic_matches = semantic_match(unmatched_book, unmatched_source, gateway)

@@ -16,6 +16,7 @@ from __future__ import annotations
 from langgraph.graph import StateGraph, START, END
 
 from reasoning.agents.exception_escalation import escalate_exceptions
+from reasoning.agents.learning_agent import learning_agent
 from reasoning.match_subgraph import run_match_subgraph
 from reasoning.schemas import ReconReport
 from recon_platform.state import ReconState, AgentMessage, MessageRole
@@ -155,7 +156,26 @@ def consolidation_node(state: ReconState) -> dict:
 
 
 def learning_node(state: ReconState) -> dict:
-    return {"messages": [_log(MessageRole.LEARNING, "Patterns learned.")]}
+    """C12: mine this run's matches into rule suggestions for approval.
+
+    Persisted to the global rule_store by default (learning_agent's
+    default). Once an analyst approves a suggestion (RuleStore.approve),
+    the very next matching_node run picks it up automatically via
+    apply_approved_rules -- no extra plumbing needed, closing the loop.
+
+    Only reachable when close_ready (no exceptions this run, per
+    consolidation_node), so exception-pattern mining never actually
+    fires in today's graph flow -- that needs close_ready to mean
+    "exceptions resolved" rather than "no exceptions occurred", which is
+    C14's job. Tolerance/fuzzy pattern mining from match_results still
+    works regardless.
+    """
+    matches = state.get("match_results") or []
+    exceptions = state.get("exceptions") or []
+    suggestions = learning_agent(matches, exceptions)
+
+    content = f"Learning: {len(suggestions)} rule suggestion(s) mined this run."
+    return {"rule_suggestions": suggestions, "messages": [_log(MessageRole.LEARNING, content)]}
 
 
 

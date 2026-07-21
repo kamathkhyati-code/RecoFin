@@ -1,10 +1,12 @@
-"""Tests for B12: learning agent (mine matches/exceptions -> RuleSuggestions)."""
+"""Tests for B12/C12: learning agent (mine patterns, apply approved rules)."""
 
 from __future__ import annotations
 
-from reasoning.agents.learning_agent import learning_agent
+from decimal import Decimal
+
+from reasoning.agents.learning_agent import apply_approved_rules, learning_agent
 from reasoning.rule_store import RuleStore
-from reasoning.schemas import ExcType, ExceptionRecord, MatchResult, MatchType
+from reasoning.schemas import ExcType, ExceptionRecord, MatchResult, MatchType, RuleSuggestion
 
 
 def _match(book_id, source_id, rule, confidence=0.7, metadata=None):
@@ -91,3 +93,53 @@ def test_suggestions_persisted_to_default_rule_store_when_none_given():
     ]
     learning_agent(matches, [])
     assert len(global_store.pending()) == before + 1
+
+
+def test_apply_approved_rules_ignores_unapproved_suggestions():
+    store = RuleStore()
+    store.add(
+        RuleSuggestion(
+            rule_type="widen_tolerance", description="x", suggested_params={"amount_tol": "0.06"}
+        )
+    )
+    assert apply_approved_rules(store) == {}
+
+
+def test_apply_approved_rules_resolves_widen_tolerance():
+    store = RuleStore()
+    item = store.add(
+        RuleSuggestion(
+            rule_type="widen_tolerance", description="x", suggested_params={"amount_tol": "0.07"}
+        )
+    )
+    store.approve(item.item_id)
+    assert apply_approved_rules(store) == {"tolerance_tool": {"amount_tol": Decimal("0.07")}}
+
+
+def test_apply_approved_rules_resolves_lower_fuzzy_threshold():
+    store = RuleStore()
+    item = store.add(
+        RuleSuggestion(
+            rule_type="lower_fuzzy_threshold", description="x", suggested_params={"min_ratio": 0.7}
+        )
+    )
+    store.approve(item.item_id)
+    assert apply_approved_rules(store) == {"fuzzy_tool": {"min_ratio": 0.7}}
+
+
+def test_apply_approved_rules_takes_most_permissive_of_multiple():
+    store = RuleStore()
+    item1 = store.add(
+        RuleSuggestion(
+            rule_type="widen_tolerance", description="x", suggested_params={"amount_tol": "0.06"}
+        )
+    )
+    item2 = store.add(
+        RuleSuggestion(
+            rule_type="widen_tolerance", description="y", suggested_params={"amount_tol": "0.09"}
+        )
+    )
+    store.approve(item1.item_id)
+    store.approve(item2.item_id)
+    config = apply_approved_rules(store)
+    assert config["tolerance_tool"]["amount_tol"] == Decimal("0.09")

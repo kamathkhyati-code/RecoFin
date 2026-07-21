@@ -118,3 +118,30 @@ def learning_agent(
             s.add(suggestion)
 
     return suggestions
+
+
+def apply_approved_rules(store: RuleStore | None = None) -> dict[str, dict]:
+    """C12: resolve approved rule suggestions into run_matching's tool_config.
+
+    Multiple approved suggestions for the same tool are additive evidence
+    that matching needs to be looser, never stricter -- take the most
+    permissive (widest tolerance / lowest fuzzy threshold) across all of
+    them, not just the latest.
+    """
+    s = store if store is not None else rule_store
+    config: dict[str, dict] = {}
+
+    for item in s.approved():
+        suggestion = item.suggestion
+        if suggestion.rule_type == "widen_tolerance":
+            new_tol = Decimal(suggestion.suggested_params["amount_tol"])
+            current = config.get("tolerance_tool", {}).get("amount_tol")
+            if current is None or new_tol > current:
+                config.setdefault("tolerance_tool", {})["amount_tol"] = new_tol
+        elif suggestion.rule_type == "lower_fuzzy_threshold":
+            new_ratio = suggestion.suggested_params["min_ratio"]
+            current = config.get("fuzzy_tool", {}).get("min_ratio")
+            if current is None or new_ratio < current:
+                config.setdefault("fuzzy_tool", {})["min_ratio"] = new_ratio
+
+    return config
