@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, TypedDict
 
@@ -27,7 +27,7 @@ class AgentMessage(BaseModel):
     role: MessageRole
     content: str
     payload: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class IssueRecord(BaseModel):
@@ -45,7 +45,20 @@ def _append_messages(left: list[AgentMessage], right: list[AgentMessage]) -> lis
 
 
 class ReconState(TypedDict, total=False):
-    """Shared LangGraph state passed between all agent nodes."""
+    """Shared LangGraph state passed between all agent nodes.
+
+    Declared here for documentation/type-safety only; TypedDict isn't
+    enforced at runtime, so a node writing an undeclared key still works.
+    Kept as `Any` rather than importing datagents/reasoning types directly,
+    since recon_platform is the shared platform layer both packages depend
+    on, not the other way around.
+
+    data-agent fields (A10/A11): transactions, source_configs,
+    normalized_transactions, validation_findings.
+    matching/exception fields (B10/B11): book_transactions,
+    source_transactions, match_results, unmatched_book, unmatched_source,
+    exceptions.
+    """
 
     run_id: str
     period: str
@@ -54,3 +67,17 @@ class ReconState(TypedDict, total=False):
     matched_count: int
     unmatched_count: int
     close_ready: bool
+
+    # Data-agent state (A track)
+    source_configs: list[Any]
+    transactions: list[Any]
+    validation_findings: list[Any]
+    normalized_transactions: list[Any]
+
+    # Matching/exception state (B track)
+    book_transactions: list[Any]
+    source_transactions: list[Any]
+    match_results: list[Any]
+    unmatched_book: list[Any]
+    unmatched_source: list[Any]
+    exceptions: list[Any]

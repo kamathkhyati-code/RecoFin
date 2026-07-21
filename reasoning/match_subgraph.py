@@ -10,7 +10,7 @@ LangGraph wiring happens at integration (B11).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from datagents.schemas import Transaction
 from recon_platform.gateway.llm_gateway import LLMGateway
@@ -18,7 +18,11 @@ from reasoning.agents.calibrated_matcher import calibrate_matches
 from reasoning.agents.exception_agent import exception_agent
 from reasoning.agents.matching_agent import run_matching
 from reasoning.agents.semantic_match_agent import semantic_match
-from reasoning.memory.match_memory import MatchMemory
+
+if TYPE_CHECKING:
+    # Type-only: importing chromadb (via MatchMemory) is expensive and
+    # unnecessary for callers that never pass a memory store (the default).
+    from reasoning.memory.match_memory import MatchMemory
 
 
 def run_match_subgraph(

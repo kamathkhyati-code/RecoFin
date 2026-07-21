@@ -1,8 +1,11 @@
 """LangGraph skeleton for the Agentic Recon pipeline.
 
-Every node here is a placeholder: it just logs a message and passes state
-through unchanged. Real agent logic gets swapped in by A, B, and C as their
-work lands. This file defines the shape of the graph and the gate logic.
+supervisor/ingestion/validation/normalization/consolidation/learning are
+still placeholders: they just log a message and pass state through
+unchanged, pending real A-side wiring at A11. matching and resolution are
+real as of B11: they run B10's matching sub-graph and B9's exception
+escalation respectively. This file defines the shape of the graph and the
+gate logic.
 
 C4 adds: optional checkpointer for persistent, resumable state, and
 optional interrupt_before for pausing execution mid-run.
@@ -12,6 +15,8 @@ from __future__ import annotations
 
 from langgraph.graph import StateGraph, START, END
 
+from reasoning.agents.exception_escalation import escalate_exceptions
+from reasoning.match_subgraph import run_match_subgraph
 from recon_platform.state import ReconState, AgentMessage, MessageRole
 from recon_platform.graph.routing import validation_gate, matched_gate, close_ready_gate
 
@@ -37,11 +42,59 @@ def normalization_node(state: ReconState) -> dict:
 
 
 def matching_node(state: ReconState) -> dict:
-    return {"messages": [_log(MessageRole.MATCHING, "Matching complete.")]}
+    """B11: real matching + exception classification (B10's sub-graph).
+
+    Threads book_transactions/source_transactions through deterministic
+    matching, hallucination-guarded calibration, and exception
+    classification. If neither is present, this is a synthetic test state
+    (e.g. HITL/e2e tests that inject matched_count/unmatched_count
+    directly to isolate the pause/resume mechanism from real matching) --
+    stay a pure pass-through exactly like the original placeholder,
+    rather than overwriting those manually-set counts with zero.
+    """
+    book = state.get("book_transactions") or []
+    source = state.get("source_transactions") or []
+    if not book and not source:
+        return {"messages": [_log(MessageRole.MATCHING, "Matching complete.")]}
+
+    result = run_match_subgraph(dict(state))
+    matches = result["match_results"]
+    exceptions = result["exceptions"]
+    unmatched_total = len(result["unmatched_book"]) + len(result["unmatched_source"])
+
+    content = (
+        f"Matched {len(matches)} pair(s); {unmatched_total} unmatched, "
+        f"{len(exceptions)} exception(s) classified."
+    )
+    return {
+        "match_results": matches,
+        "unmatched_book": result["unmatched_book"],
+        "unmatched_source": result["unmatched_source"],
+        "exceptions": exceptions,
+        "matched_count": len(matches),
+        "unmatched_count": unmatched_total,
+        "messages": [_log(MessageRole.MATCHING, content)],
+    }
 
 
 def resolution_node(state: ReconState) -> dict:
-    return {"messages": [_log(MessageRole.RESOLUTION, "Exceptions resolved.")]}
+    """B11: real exception escalation (B9) at the HITL gate.
+
+    Runs whatever exceptions matching_node classified through B9's
+    escalation logic: high-risk ones go to the shared review queue,
+    low-risk ones are auto-resolved. Exceptions is empty for states that
+    never carried real transactions, matching the placeholder's no-op
+    behavior in that case.
+    """
+    exceptions = state.get("exceptions", []) or []
+    run_id = state.get("run_id", "unknown-run")
+    summary = escalate_exceptions(exceptions, run_id=run_id)
+
+    content = (
+        f"Escalated {len(summary['escalated'])}, "
+        f"auto-resolved {len(summary['auto_resolved'])} exception(s)."
+    )
+    return {"messages": [_log(MessageRole.RESOLUTION, content)]}
 
 
 def consolidation_node(state: ReconState) -> dict:
