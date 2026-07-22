@@ -15,10 +15,13 @@ since cross-source checks (e.g. dedupe) need to see both sides at once.
 
 A13: ingestion_node now also records per-source ToolSpan metrics (rows
 in/out, retry attempts, duration, status) via ingest_sources_with_metrics
-and surfaces them as ingestion_metrics. Note: ReconState doesn't declare
-this key yet, so it won't survive a full graph.invoke() until that's added
-(LangGraph drops any key not declared in the state schema) -- flagged
-separately, not something to fix here.
+and surfaces them as ingestion_metrics (declared in ReconState).
+
+A14: validation_node escalates ambiguous rows (ValidationFinding.escalate,
+via the module-level _LLM_GATEWAY) to human review through the same
+"resolution" HITL interrupt point B9's matching exceptions already use --
+see validation_node's docstring for why the gateway lives at module level
+rather than in state.
 
 C4 adds: optional checkpointer for persistent, resumable state, and
 optional interrupt_before for pausing execution mid-run.
@@ -107,18 +110,45 @@ def ingestion_node(state: ReconState) -> dict:
 def validation_node(state: ReconState) -> dict:
     """A11: real validation over the combined book+bank transaction set.
 
+    A14: an ambiguous row the LLM flagged for human review
+    (ValidationFinding.escalate=True) is tagged severity="review" rather
+    than "warning"/"error" -- distinct from _has_critical_issue's
+    batch-level retry logic (routing.py), since this isn't a retryable
+    failure, it's an individual row that genuinely needs a human decision.
+    validation_gate routes "review" issues to the same "resolution"
+    interrupt point B9's matching exceptions already use, so
+    start_run_with_hitl/resume_with_decision (recon_platform/hitl/resume.py)
+    work unchanged -- that machinery only checks whether the graph paused
+    before "resolution", not why.
+
+    Uses the module-level _LLM_GATEWAY (None by default, same pattern as
+    _ALIAS_STORE below) rather than reading a gateway off state: a live
+    gateway object isn't checkpointer-serializable (msgpack can't encode
+    it), and HITL runs persist state to SQLite between pause and resume --
+    confirmed this the hard way when a first attempt at threading the
+    gateway through state broke the checkpointer. Tests that need to
+    exercise the escalation path monkeypatch this module attribute
+    directly with a MockLLMGateway.
+
     `issues` has no reducer on ReconState, so returning it from this node
     would silently replace whatever ingestion_node already put there.
     Concatenate instead so ingestion-level and validation-level issues
     both survive into the gate's check.
     """
     txns = state.get("transactions", [])
-    findings = validate_transactions(txns)
+    findings = validate_transactions(txns, gateway=_LLM_GATEWAY)
+
+    def _severity(f) -> str:
+        if f.escalate:
+            return "review"
+        if f.reason == ReasonCode.AMBIGUOUS:
+            return "warning"
+        return "error"
 
     new_issues = [
         IssueRecord(
             source="validation",
-            severity="warning" if f.reason == ReasonCode.AMBIGUOUS else "error",
+            severity=_severity(f),
             message=f"{f.reason.value}: {f.detail}",
             row_ref=f.txn_id,
         )
@@ -135,6 +165,11 @@ def validation_node(state: ReconState) -> dict:
 
 
 _ALIAS_STORE = AliasStore()
+
+# A14: None by default -- zero live LLM calls, matching every other
+# real-run assumption in this graph. Tests set this to a MockLLMGateway
+# (via monkeypatch) to exercise ambiguous-row escalation deterministically.
+_LLM_GATEWAY = None
 
 
 def normalization_node(state: ReconState) -> dict:
