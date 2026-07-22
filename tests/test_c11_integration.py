@@ -1,17 +1,16 @@
-"""C11 (partial): E2E golden-data traversal through the real (B-side) graph.
+"""C11: matching/exception/consolidation path, isolated from ingestion.
 
 Proves matching_node, resolution_node, and consolidation_node (B11 + the
 consolidation change alongside this file) genuinely compose into a
-working ReconReport when given real transactions.
+working ReconReport when given transactions directly -- useful for
+pinpointing a failure to this layer specifically, without ingestion in
+the mix.
 
-This is NOT full C11. C11's spec is "assemble A+B agents into the real
-graph" -- A11 (Intern A's data-agent integration) does not exist yet, so
-ingestion/validation/normalization remain placeholders. This test
-supplies book_transactions/source_transactions directly in initial_state,
-standing in for what A11's real ingestion/validation/normalization
-pipeline will eventually produce from source_configs. Once A11 lands,
-extend this test (or add a sibling) to derive them from real
-source_configs via the real A-agents instead of injecting them directly.
+A11 has landed (see recon_platform/graph/build.py) and
+tests/test_c11_full_e2e.py now proves the actual full C11 acceptance
+criteria -- real ingestion from source_configs through the complete real
+graph. This file's tests are a deliberately narrower, faster check, kept
+because isolating layers is still useful when something breaks.
 """
 
 from __future__ import annotations
