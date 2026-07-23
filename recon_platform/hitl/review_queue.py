@@ -43,3 +43,18 @@ class ReviewQueue:
 
 
 review_queue = ReviewQueue()
+
+
+def pending_for_run(run_id: str, queue: ReviewQueue | None = None) -> list[ReviewItem]:
+    """Pending items for a specific graph run_id.
+
+    B9's exception_escalation keys queue items as "{run_id}:{side}:{txn_id}"
+    (one entry per exception) rather than the plain run_id this queue was
+    originally keyed by (one entry per paused run, see hitl/resume.py) --
+    this filters by prefix to find only this run's still-pending
+    exceptions, which is what C14's close_ready check needs: "exceptions
+    resolved", not "run un-paused".
+    """
+    q = queue if queue is not None else review_queue
+    prefix = f"{run_id}:"
+    return [item for item in q.pending() if item.run_id.startswith(prefix)]
