@@ -19,10 +19,7 @@ from reasoning.agents.calibrated_matcher import (
 from reasoning.match_subgraph import run_match_subgraph
 from reasoning.memory.match_memory import MatchMemory
 from reasoning.schemas import MatchResult, MatchType
-
-# Provisional auto-match floor; B16 formalizes this into reasoning/thresholds.py
-# once the eval numbers below justify a specific cut.
-_PROVISIONAL_AUTO_THRESHOLD = 0.85
+from reasoning.thresholds import AUTO_MATCH_THRESHOLD as _PROVISIONAL_AUTO_THRESHOLD
 
 
 class ScriptedSemanticGateway(LLMGateway):
