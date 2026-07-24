@@ -21,6 +21,7 @@ from datagents.tools.validation_tools import (
     fx_check_tool,
 )
 from recon_platform.gateway.llm_gateway import LLMGateway
+from recon_platform.guardrails.injection_guard import any_field_looks_like_injection
 from recon_platform.guardrails.validators import GuardrailError, validate_with_retry
 from recon_platform.state import IssueRecord
 
@@ -47,6 +48,16 @@ def _ambiguous_prompt(txn: Transaction) -> str:
 
 def _judge_ambiguous(txn: Transaction, gateway: LLMGateway) -> ValidationFinding:
     """Ask the LLM for a verdict, guarded into the LLMVerdict shape."""
+    if any_field_looks_like_injection(txn.counterparty, txn.reference):
+        # C17: counterparty looks like it's trying to manipulate the model
+        # -- never send it to the LLM. Escalate for human review instead
+        # of trusting the model to resist the injection.
+        return ValidationFinding(
+            txn_id=txn.txn_id,
+            reason=ReasonCode.AMBIGUOUS,
+            detail="Counterparty/reference field flagged by injection guard; escalated without an LLM call.",
+            escalate=True,
+        )
     try:
         verdict = validate_with_retry(
             LLMVerdict, lambda: gateway.generate(_ambiguous_prompt(txn))

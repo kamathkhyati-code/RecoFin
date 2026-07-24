@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from datagents.schemas import Transaction
 from recon_platform.gateway.llm_gateway import LLMGateway
+from recon_platform.guardrails.injection_guard import any_field_looks_like_injection
 from recon_platform.guardrails.validators import validate_with_retry
 from reasoning.schemas import MatchResult, MatchType
 
@@ -67,6 +68,12 @@ def semantic_match(
             if b.currency != s.currency:
                 continue
             if abs(b.amount - s.amount) > amount_tol:
+                continue
+            if any_field_looks_like_injection(b.reference, b.counterparty, s.reference, s.counterparty):
+                # C17: a field looks like it's trying to manipulate the
+                # model -- never send it to the LLM. Falls through to
+                # exception handling for human review instead of trusting
+                # the model to resist the injection.
                 continue
 
             prompt = _build_prompt(b, s)

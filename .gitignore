@@ -2,3 +2,11 @@ __pycache__/
 *.pyc
 .venv/
 *.egg-info/
+
+# C17: secrets should only ever come from the environment, never a
+# committed file. GROQ_API_KEY and friends belong in a local .env that
+# must never be tracked.
+.env
+.env.*
+!.env.example
+*.db
