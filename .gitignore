@@ -10,3 +10,10 @@ __pycache__/
 .env.*
 !.env.example
 *.db
+
+# C19: AliasStore's cache (A9) persists to disk by design (a 2nd run
+# should make zero LLM calls), but that means it's local dev-instance
+# state, never something to commit -- found while bug-bashing when a
+# stray copy from a manual test run silently changed a later pytest
+# run's behavior.
+alias_cache.json
