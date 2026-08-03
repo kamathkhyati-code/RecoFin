@@ -1,11 +1,22 @@
 # Minimal dependencies for demo_app.py specifically (Streamlit Community
-# Cloud deployment). The full dev environment (langgraph, chromadb,
-# langchain-groq, etc.) is declared in pyproject.toml and installed via
+# Cloud deployment). The full dev environment (langchain, langchain-groq,
+# etc.) is declared in pyproject.toml and installed via
 # `pip install -e ".[dev]"` -- demo_app.py doesn't need any of that, so
 # this file stays deliberately separate and minimal rather than reusing
 # the full dependency set, to keep the Cloud build fast and reliable.
+#
+# demo_app.py now calls the real build_graph() (recon_platform.graph.build),
+# which pulls in langgraph directly and chromadb transitively (via
+# reasoning.memory.match_memory's module-level MatchMemory singleton).
+# Traced by installing only the base set below in a clean venv and
+# resolving each ModuleNotFoundError one at a time -- these two are
+# genuinely everything else demo_app.py needs; it runs gateway-less
+# (no LLM calls), so langchain/langchain-groq/langgraph-checkpoint-sqlite
+# are NOT required.
 streamlit
 pandas
 pydantic
 httpx
 paramiko
+langgraph
+chromadb
