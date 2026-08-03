@@ -1,13 +1,15 @@
+import tempfile
+import uuid
+from collections import Counter
+from pathlib import Path
+
 import pandas as pd
-import streamlit as st 
-from pathlib import Path 
+import streamlit as st
 
-from datagents.agents.ingestion_agent import ingest_sources 
-from datagents.agents.normalization_agent import normalize_transactions
-from datagents.agents.validation_agent import validate_transactions
+from datagents.agents.ingestion_agent import ingest_sources
 from datagents.schemas import SourceConfig, SourceType
+from recon_platform.graph.build import build_graph
 
-SAMPLE = Path(__file__).parent / "sample_data"
 BANK_FIELD_MAP = {"transaction_id": "txn_id", "value_date": "date", "ccy": "currency"}
 
 
@@ -23,28 +25,6 @@ def rows(txns):
         }
         for t in txns
     ]
-
-
-def match(book, source):
-    matched, unmatched_book, used = [], [], set()
-    for b in book:
-        hit = None
-        for i, s in enumerate(source):
-            if (
-                i not in used
-                and b.amount == s.amount
-                and b.date == s.date
-                and b.counterparty == s.counterparty
-            ):
-                hit = s
-                used.add(i)
-                break
-        if hit:
-            matched.append((b, hit))
-        else:
-            unmatched_book.append(b)
-    unmatched_source = [s for i, s in enumerate(source) if i not in used]
-    return matched, unmatched_book, unmatched_source
 
 
 st.set_page_config(page_title="RecoFin Demo", layout="wide")
@@ -68,6 +48,7 @@ _DARK_CSS = f"""
 [data-testid="stMetricValue"] {{ color: {_ACCENT}; }}
 [data-testid="stMetricLabel"] {{ color: #9a9aa2; }}
 [data-testid="stDataFrame"] {{ color-scheme: dark; border: 1px solid #24242c; border-radius: 8px; }}
+[data-testid="stFileUploader"] {{ background-color: #131318; border: 1px solid #24242c; border-radius: 8px; padding: 8px; }}
 .stTabs [data-baseweb="tab"] {{ color: #9a9aa2; }}
 .stTabs [aria-selected="true"] {{ color: {_ACCENT} !important; }}
 hr {{ border-color: #24242c; }}
@@ -86,6 +67,7 @@ _LIGHT_CSS = f"""
 [data-testid="stMetricValue"] {{ color: #0f766e; }}
 [data-testid="stMetricLabel"] {{ color: #7a7568; }}
 [data-testid="stDataFrame"] {{ border: 1px solid #e8e2d3; border-radius: 8px; }}
+[data-testid="stFileUploader"] {{ background-color: #ffffff; border: 1px solid #e8e2d3; border-radius: 8px; padding: 8px; }}
 .stTabs [aria-selected="true"] {{ color: #0f766e !important; }}
 hr {{ border-color: #e8e2d3; }}
 </style>
@@ -149,73 +131,148 @@ with st.sidebar:
         "1. **Ingest** — pull from CSV / API / SFTP\n"
         "2. **Validate** — catch bad data\n"
         "3. **Normalize** — one currency, canonical names\n"
-        "4. **Match** — book vs bank"
+        "4. **Match** — deterministic + memory-boosted\n"
+        "5. **Classify exceptions** — risk-scored, resolution suggested"
     )
-    st.caption("Demo running on sample book & bank data.")
+    st.divider()
+    st.markdown("**Upload your data**")
+    book_file = st.file_uploader("Book CSV", type=["csv"], key="book_upload")
+    bank_file = st.file_uploader("Bank CSV", type=["csv"], key="bank_upload")
+    with st.expander("Expected columns"):
+        st.caption("Book: txn_id, date, amount, currency, counterparty, reference")
+        st.caption("Bank: transaction_id, value_date, amount, ccy, counterparty, reference")
     st.divider()
     toggle_label = "Light mode" if st.session_state.dark_mode else "Dark mode"
     st.button(toggle_label, on_click=_toggle_theme, use_container_width=True)
 
 st.markdown('<p class="brand-wordmark" style="font-size: 2.2rem;">RecoFin — Reconciliation Demo</p>', unsafe_allow_html=True)
-st.write("**Ingest → Validate → Normalize → Match**")
+st.write("**Ingest → Validate → Normalize → Match → Classify exceptions**, run on the real compiled graph.")
 
-if st.button("Run reconciliation", type="primary"):
-    book_res = ingest_sources([
-        SourceConfig(
-            name="book", source_type=SourceType.CSV,
-            location=str(SAMPLE / "demo_book.csv"),
-        ),
-    ])
-    bank_res = ingest_sources([
-        SourceConfig(
-            name="bank", source_type=SourceType.CSV,
-            location=str(SAMPLE / "demo_bank.csv"),
-            options={"field_map": BANK_FIELD_MAP},
-        ),
-    ])
+both_uploaded = book_file is not None and bank_file is not None
+if not both_uploaded:
+    st.info("Upload a book CSV and a bank CSV in the sidebar to run a reconciliation.")
 
-    findings = validate_transactions(book_res.transactions + bank_res.transactions)
-    book_norm = normalize_transactions(book_res.transactions)
-    bank_norm = normalize_transactions(bank_res.transactions)
-    matched, un_book, un_bank = match(book_norm, bank_norm)
+run_clicked = st.button("Run reconciliation", type="primary", disabled=not both_uploaded)
 
-    total = len(book_norm) or 1
-    rate = len(matched) / total * 100
-    rejected = len(book_res.issues) + len(bank_res.issues)
+if run_clicked and both_uploaded:
+    with tempfile.TemporaryDirectory() as tmp:
+        book_path = Path(tmp) / "book.csv"
+        bank_path = Path(tmp) / "bank.csv"
+        book_path.write_bytes(book_file.getvalue())
+        bank_path.write_bytes(bank_file.getvalue())
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Match rate", f"{rate:.0f}%")
-    c2.metric("Matched", len(matched))
-    c3.metric("Unmatched", len(un_book) + len(un_bank))
-    c4.metric("Bad rows rejected", rejected)
+        # Separate, lightweight ingest purely for the raw before/after
+        # display below -- doesn't feed into the reconciliation itself,
+        # which re-ingests the same files inside the real graph.
+        raw_book = ingest_sources([
+            SourceConfig(name="book", source_type=SourceType.CSV, location=str(book_path)),
+        ])
+        raw_bank = ingest_sources([
+            SourceConfig(
+                name="bank", source_type=SourceType.CSV, location=str(bank_path),
+                options={"field_map": BANK_FIELD_MAP},
+            ),
+        ])
+
+        with st.spinner("Running the real multi-agent pipeline (ingest, validate, normalize, match, classify)..."):
+            graph = build_graph()
+            run_id = f"demo-{uuid.uuid4().hex[:8]}"
+            result = graph.invoke({
+                "run_id": run_id,
+                "period": "demo",
+                "messages": [],
+                "issues": [],
+                "book_source_configs": [
+                    SourceConfig(name="book", source_type=SourceType.CSV, location=str(book_path)),
+                ],
+                "bank_source_configs": [
+                    SourceConfig(
+                        name="bank", source_type=SourceType.CSV, location=str(bank_path),
+                        options={"field_map": BANK_FIELD_MAP},
+                    ),
+                ],
+            })
+
+    report = result["report"]
+    matches = result.get("match_results") or []
+    unmatched_book = result.get("unmatched_book") or []
+    unmatched_source = result.get("unmatched_source") or []
+    exceptions = result.get("exceptions") or []
+    findings = result.get("validation_findings") or []
+    issues = result.get("issues") or []
+    rejected = len([i for i in issues if i.severity == "error"])
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Match rate", f"{report.match_rate * 100:.0f}%")
+    c2.metric("Matched", report.matched_count)
+    c3.metric("Unmatched", report.unmatched_count)
+    c4.metric("Exceptions", report.exception_count)
+    c5.metric("Bad rows rejected", rejected)
 
     chart = pd.DataFrame(
-        {"count": [len(matched), len(un_book) + len(un_bank), rejected]},
+        {"count": [report.matched_count, report.unmatched_count, rejected]},
         index=["Matched", "Unmatched", "Rejected"],
     )
     st.bar_chart(chart)
 
-    t1, t2, t3 = st.tabs(
-        ["Results", "Normalization (before → after)", "Raw & findings"]
+    t1, t2, t3, t4 = st.tabs(
+        ["Results", "Exceptions", "Normalization (before → after)", "Raw & findings"]
     )
 
     with t1:
         st.subheader("Matched pairs")
+        st.caption(
+            "match_type shows which layer of the real matching engine caught it: "
+            "exact / tolerance / fuzzy (deterministic), memory (RAG-boosted), or "
+            "semantic (LLM, only when a gateway is configured)."
+        )
         st.dataframe(
             [
                 {
-                    "book_id": b.txn_id, "bank_id": s.txn_id,
-                    "amount_usd": str(b.amount), "counterparty": b.counterparty,
-                    "date": b.date.isoformat(),
+                    "book_id": m.book_txn_id,
+                    "bank_id": m.source_txn_id,
+                    "match_type": m.match_type.value,
+                    "confidence": round(m.confidence, 2),
+                    "rule": m.rule,
                 }
-                for b, s in matched
+                for m in matches
             ],
             use_container_width=True,
         )
-        st.subheader("Unmatched — needs review")
-        st.dataframe(rows(un_book + un_bank), use_container_width=True)
+        st.subheader("Unmatched — book side")
+        st.dataframe(rows(unmatched_book), use_container_width=True)
+        st.subheader("Unmatched — bank side")
+        st.dataframe(rows(unmatched_source), use_container_width=True)
 
     with t2:
+        st.subheader("Exception classification")
+        st.caption(
+            "Every unmatched transaction, classified and risk-scored by the "
+            "real exception agent -- high-risk items are escalated to the "
+            "review queue, low-risk ones auto-resolve."
+        )
+        if exceptions:
+            by_type = Counter(e.exc_type.value for e in exceptions)
+            st.dataframe(
+                pd.DataFrame({"count": list(by_type.values())}, index=list(by_type.keys())),
+                use_container_width=True,
+            )
+        st.dataframe(
+            [
+                {
+                    "txn_id": e.txn_id,
+                    "side": e.side,
+                    "type": e.exc_type.value,
+                    "risk_score": round(e.risk_score, 2),
+                    "suggested_resolution": e.suggested_resolution,
+                }
+                for e in exceptions
+            ]
+            or [{"status": "no exceptions"}],
+            use_container_width=True,
+        )
+
+    with t3:
         st.write(
             "Normalization converts everything to USD and canonical names, "
             "so the book and bank become comparable."
@@ -223,13 +280,19 @@ if st.button("Run reconciliation", type="primary"):
         a, b = st.columns(2)
         with a:
             st.caption("Book — raw")
-            st.dataframe(rows(book_res.transactions), use_container_width=True)
+            st.dataframe(rows(raw_book.transactions), use_container_width=True)
         with b:
             st.caption("Book — normalized")
-            st.dataframe(rows(book_norm), use_container_width=True)
+            st.dataframe(rows(result.get("book_transactions") or []), use_container_width=True)
 
-    with t3:
+    with t4:
         st.subheader("Validation findings")
+        st.caption(
+            "Four deterministic checks always run (completeness, dedupe, "
+            "format, FX). Ambiguous-row LLM review is disabled in this "
+            "demo (no gateway configured), so only deterministic findings "
+            "appear here."
+        )
         st.dataframe(
             [
                 {"txn_id": f.txn_id, "reason": f.reason.value, "escalate": f.escalate}
@@ -239,4 +302,4 @@ if st.button("Run reconciliation", type="primary"):
             use_container_width=True,
         )
         st.subheader("Bank — raw ingested")
-        st.dataframe(rows(bank_res.transactions), use_container_width=True)
+        st.dataframe(rows(raw_bank.transactions), use_container_width=True)
