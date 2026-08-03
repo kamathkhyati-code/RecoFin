@@ -49,8 +49,70 @@ def match(book, source):
 
 st.set_page_config(page_title="RecoFin Demo", page_icon="💰", layout="wide")
 
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = False
+
+_ACCENT = "#14b8a6"
+
+_DARK_CSS = f"""
+<style>
+.stApp {{ background-color: #0a0a0d; color: #e5e5e5; }}
+[data-testid="stSidebar"] {{ background-color: #101014; border-right: 1px solid #202027; }}
+[data-testid="stSidebar"] * {{ color: #e5e5e5; }}
+[data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] small {{ color: #8a8a92 !important; }}
+.stApp h1, .stApp h2, .stApp h3 {{ color: #f2f2f2; }}
+[data-testid="stMetric"] {{
+    background-color: #131318; border: 1px solid #24242c; border-radius: 10px;
+    padding: 14px 16px;
+}}
+[data-testid="stMetricValue"] {{ color: {_ACCENT}; }}
+[data-testid="stMetricLabel"] {{ color: #9a9aa2; }}
+[data-testid="stDataFrame"] {{ color-scheme: dark; border: 1px solid #24242c; border-radius: 8px; }}
+.stTabs [data-baseweb="tab"] {{ color: #9a9aa2; }}
+.stTabs [aria-selected="true"] {{ color: {_ACCENT} !important; }}
+hr {{ border-color: #24242c; }}
+</style>
+"""
+
+_LIGHT_CSS = f"""
+<style>
+.stApp {{ background-color: #faf6ee; color: #2b2b28; }}
+[data-testid="stSidebar"] {{ background-color: #f1ece0; border-right: 1px solid #e3ddcd; }}
+[data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] small {{ color: #8a8474 !important; }}
+[data-testid="stMetric"] {{
+    background-color: #ffffff; border: 1px solid #e8e2d3; border-radius: 10px;
+    padding: 14px 16px;
+}}
+[data-testid="stMetricValue"] {{ color: #0f766e; }}
+[data-testid="stMetricLabel"] {{ color: #7a7568; }}
+[data-testid="stDataFrame"] {{ border: 1px solid #e8e2d3; border-radius: 8px; }}
+.stTabs [aria-selected="true"] {{ color: #0f766e !important; }}
+hr {{ border-color: #e8e2d3; }}
+</style>
+"""
+
+_BUTTON_CSS = f"""
+<style>
+.stButton button[kind="primary"] {{
+    background-color: {_ACCENT}; border-color: {_ACCENT}; color: #04140f;
+}}
+.stButton button[kind="primary"]:hover {{
+    background-color: #0f9c8c; border-color: #0f9c8c;
+}}
+</style>
+"""
+
+st.markdown(_DARK_CSS if st.session_state.dark_mode else _LIGHT_CSS, unsafe_allow_html=True)
+st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
+
+
+def _toggle_theme():
+    st.session_state.dark_mode = not st.session_state.dark_mode
+
+
 with st.sidebar:
     st.header("💰 RecoFin")
+    st.caption("AGENTIC RECONCILIATION")
     st.write(
         "An agentic reconciliation system — it matches a company's books "
         "against the bank and flags what doesn't line up."
@@ -63,6 +125,9 @@ with st.sidebar:
         "4. **Match** — book vs bank"
     )
     st.caption("Demo running on sample book & bank data.")
+    st.divider()
+    toggle_label = "☀️  Light mode" if st.session_state.dark_mode else "🌙  Dark mode"
+    st.button(toggle_label, on_click=_toggle_theme, use_container_width=True)
 
 st.title("💰 RecoFin — Reconciliation Demo")
 st.write("**Ingest → Validate → Normalize → Match**")
