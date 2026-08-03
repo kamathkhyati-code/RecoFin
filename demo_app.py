@@ -9,6 +9,7 @@ import streamlit as st
 from datagents.agents.ingestion_agent import ingest_sources
 from datagents.schemas import SourceConfig, SourceType
 from recon_platform.graph.build import build_graph
+from recon_platform.reporting.report_builder import build_report_zip
 
 BANK_FIELD_MAP = {"transaction_id": "txn_id", "value_date": "date", "ccy": "currency"}
 
@@ -222,6 +223,15 @@ if run_clicked and both_uploaded:
         index=["Matched", "Unmatched", "Rejected"],
     )
     st.bar_chart(chart)
+
+    report_package = result.get("report_package")
+    if report_package is not None:
+        st.download_button(
+            "Download audit report (.zip)",
+            data=build_report_zip(report_package),
+            file_name=f"recofin-report-{run_id}.zip",
+            mime="application/zip",
+        )
 
     t1, t2, t3, t4 = st.tabs(
         ["Results", "Exceptions", "Normalization (before → after)", "Raw & findings"]

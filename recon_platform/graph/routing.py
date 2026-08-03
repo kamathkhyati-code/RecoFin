@@ -68,5 +68,6 @@ def matched_gate(state: dict) -> str:
 
 
 def close_ready_gate(state: dict) -> str:
-    """After consolidation: learning loop runs only when close-ready."""
+    """After consolidation + reporting: learning loop runs only when
+    close-ready."""
     return "learning" if state.get("close_ready") else "end"

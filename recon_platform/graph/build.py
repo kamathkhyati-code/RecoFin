@@ -75,6 +75,7 @@ from reasoning.memory.match_memory import MatchMemory
 from reasoning.schemas import ReconReport
 from recon_platform.gateway.llm_gateway import LLMGateway
 from recon_platform.hitl.review_queue import pending_for_run
+from recon_platform.reporting.report_builder import build_report_package
 from recon_platform.state import ReconState, AgentMessage, MessageRole, IssueRecord
 from recon_platform.graph.routing import validation_gate, matched_gate, close_ready_gate
 
@@ -358,6 +359,35 @@ def consolidation_node(state: ReconState) -> dict:
     }
 
 
+def reporting_node(state: ReconState) -> dict:
+    """Reporting Agent: packages consolidation's ReconReport plus the
+    run's match/exception/unmatched detail into an exportable, audit-
+    ready artifact (report_package) -- see
+    recon_platform/reporting/report_builder.py for why this is a
+    separate concern from consolidation_node (that node decides the
+    summary numbers and close-readiness; this only formats what it
+    already decided). Runs unconditionally right after consolidation, on
+    every run regardless of close_ready, so report_package is always
+    available downstream (e.g. demo_app.py's export button) -- a run
+    that isn't close-ready still deserves an audit trail of what
+    happened.
+    """
+    report = state.get("report")
+    if report is None:
+        return {"messages": [_log(MessageRole.REPORTING, "No report to package.")]}
+    package = build_report_package(
+        report=report,
+        matches=state.get("match_results") or [],
+        unmatched_book=state.get("unmatched_book") or [],
+        unmatched_source=state.get("unmatched_source") or [],
+        exceptions=state.get("exceptions") or [],
+    )
+    return {
+        "report_package": package,
+        "messages": [_log(MessageRole.REPORTING, "Report packaged for export.")],
+    }
+
+
 def learning_node(state: ReconState) -> dict:
     """C12: mine this run's matches into rule suggestions for approval.
     Persisted to the global rule_store by default (learning_agent's
@@ -404,6 +434,7 @@ def build_graph(
     graph.add_node("matching", functools.partial(matching_node, gateway=gateway))
     graph.add_node("resolution", resolution_node)
     graph.add_node("consolidation", consolidation_node)
+    graph.add_node("reporting", reporting_node)
     graph.add_node("learning", learning_node)
     graph.add_edge(START, "supervisor")
     graph.add_edge("supervisor", "ingestion")
@@ -420,8 +451,9 @@ def build_graph(
         {"resolution": "resolution", "consolidation": "consolidation"},
     )
     graph.add_edge("resolution", "consolidation")
+    graph.add_edge("consolidation", "reporting")
     graph.add_conditional_edges(
-        "consolidation",
+        "reporting",
         close_ready_gate,
         {"learning": "learning", "end": END},
     )

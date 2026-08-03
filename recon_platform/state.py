@@ -18,6 +18,7 @@ class MessageRole(str, Enum):
     RESOLUTION = "resolution"
     CONSOLIDATION = "consolidation"
     LEARNING = "learning"
+    REPORTING = "reporting"
     HUMAN = "human"
 
 
@@ -102,6 +103,12 @@ class ReconState(TypedDict, total=False):
 
     # Consolidation state (C track, C11)
     report: Any
+
+    # Reporting Agent state: the exportable, audit-ready artifact built
+    # from `report` + match/exception/unmatched detail. Declared
+    # separately from `report` since it's a distinct node's output
+    # (recon_platform/reporting/report_builder.py), not consolidation's.
+    report_package: Any
 
     # Learning loop state (B12/C12)
     rule_suggestions: list[Any]
