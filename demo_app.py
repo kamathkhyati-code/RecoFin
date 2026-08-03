@@ -219,10 +219,15 @@ if run_clicked and both_uploaded:
     c5.metric("Bad rows rejected", rejected)
 
     chart = pd.DataFrame(
-        {"count": [report.matched_count, report.unmatched_count, rejected]},
-        index=["Matched", "Unmatched", "Rejected"],
+        {
+            "status": ["Matched", "Unmatched", "Rejected"],
+            "count": [report.matched_count, report.unmatched_count, rejected],
+        }
     )
-    st.bar_chart(chart)
+    st.bar_chart(
+        chart, x="status", y="count", color="status",
+        use_container_width=True,
+    )
 
     report_package = result.get("report_package")
     if report_package is not None:
@@ -244,23 +249,39 @@ if run_clicked and both_uploaded:
             "exact / tolerance / fuzzy (deterministic), memory (RAG-boosted), or "
             "semantic (LLM, only when a gateway is configured)."
         )
-        st.dataframe(
-            [
-                {
-                    "book_id": m.book_txn_id,
-                    "bank_id": m.source_txn_id,
-                    "match_type": m.match_type.value,
-                    "confidence": round(m.confidence, 2),
-                    "rule": m.rule,
-                }
-                for m in matches
-            ],
-            use_container_width=True,
-        )
+        if matches:
+            st.dataframe(
+                [
+                    {
+                        "book_id": m.book_txn_id,
+                        "bank_id": m.source_txn_id,
+                        "match_type": m.match_type.value,
+                        "confidence": m.confidence,
+                        "rule": m.rule,
+                    }
+                    for m in matches
+                ],
+                use_container_width=True,
+                column_config={
+                    "confidence": st.column_config.ProgressColumn(
+                        "confidence", min_value=0.0, max_value=1.0, format="%.2f"
+                    ),
+                },
+            )
+        else:
+            st.info("No matches on this run.")
+
         st.subheader("Unmatched — book side")
-        st.dataframe(rows(unmatched_book), use_container_width=True)
+        if unmatched_book:
+            st.dataframe(rows(unmatched_book), use_container_width=True)
+        else:
+            st.success("Everything on the book side matched.")
+
         st.subheader("Unmatched — bank side")
-        st.dataframe(rows(unmatched_source), use_container_width=True)
+        if unmatched_source:
+            st.dataframe(rows(unmatched_source), use_container_width=True)
+        else:
+            st.success("Everything on the bank side matched.")
 
     with t2:
         st.subheader("Exception classification")
@@ -275,20 +296,26 @@ if run_clicked and both_uploaded:
                 pd.DataFrame({"count": list(by_type.values())}, index=list(by_type.keys())),
                 use_container_width=True,
             )
-        st.dataframe(
-            [
-                {
-                    "txn_id": e.txn_id,
-                    "side": e.side,
-                    "type": e.exc_type.value,
-                    "risk_score": round(e.risk_score, 2),
-                    "suggested_resolution": e.suggested_resolution,
-                }
-                for e in exceptions
-            ]
-            or [{"status": "no exceptions"}],
-            use_container_width=True,
-        )
+            st.dataframe(
+                [
+                    {
+                        "txn_id": e.txn_id,
+                        "side": e.side,
+                        "type": e.exc_type.value,
+                        "risk_score": e.risk_score,
+                        "suggested_resolution": e.suggested_resolution,
+                    }
+                    for e in exceptions
+                ],
+                use_container_width=True,
+                column_config={
+                    "risk_score": st.column_config.ProgressColumn(
+                        "risk_score", min_value=0.0, max_value=1.0, format="%.2f"
+                    ),
+                },
+            )
+        else:
+            st.success("No exceptions on this run.")
 
     with t3:
         st.write(
@@ -311,13 +338,15 @@ if run_clicked and both_uploaded:
             "demo (no gateway configured), so only deterministic findings "
             "appear here."
         )
-        st.dataframe(
-            [
-                {"txn_id": f.txn_id, "reason": f.reason.value, "escalate": f.escalate}
-                for f in findings
-            ]
-            or [{"status": "all clean"}],
-            use_container_width=True,
-        )
+        if findings:
+            st.dataframe(
+                [
+                    {"txn_id": f.txn_id, "reason": f.reason.value, "escalate": f.escalate}
+                    for f in findings
+                ],
+                use_container_width=True,
+            )
+        else:
+            st.success("All clean — no validation findings.")
         st.subheader("Bank — raw ingested")
         st.dataframe(rows(raw_bank.transactions), use_container_width=True)
