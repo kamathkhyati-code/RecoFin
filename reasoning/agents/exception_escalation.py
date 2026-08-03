@@ -18,6 +18,25 @@ from reasoning.schemas import ExceptionRecord
 # Exceptions at or above this risk score need a human decision.
 ESCALATION_THRESHOLD = 0.5
 
+# SLA windows by risk tier, checked highest-first: higher risk gets a
+# tighter deadline since it's more likely a real problem needing prompt
+# attention; lower risk still gets a deadline (nothing sits in the queue
+# forever unmonitored), just a longer one.
+_SLA_HOURS_BY_RISK = [
+    (0.8, 24.0),
+    (0.6, 72.0),
+]
+_DEFAULT_SLA_HOURS = 168.0
+
+
+def sla_hours_for_risk(risk_score: float) -> float:
+    """SLA window (hours) an escalated exception gets, scaled by risk --
+    high-risk items need a same-day look, low-risk ones can wait a week."""
+    for threshold, hours in _SLA_HOURS_BY_RISK:
+        if risk_score >= threshold:
+            return hours
+    return _DEFAULT_SLA_HOURS
+
 
 def _queue_key(run_id: str, record: ExceptionRecord) -> str:
     """Stable per-exception key so the same exception maps to one entry."""
@@ -61,7 +80,7 @@ def escalate_exceptions(
             f"{record.exc_type.value} exception on {record.side} txn "
             f"{record.txn_id} (risk {record.risk_score}): {record.suggested_resolution}"
         )
-        q.add(key, reason=reason)
+        q.add(key, reason=reason, sla_hours=sla_hours_for_risk(record.risk_score))
         escalated.append(record.txn_id)
 
     return {

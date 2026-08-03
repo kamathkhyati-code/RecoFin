@@ -22,6 +22,7 @@ import zipfile
 from datetime import datetime, timezone
 
 from datagents.schemas import Transaction
+from reasoning.agents.exception_escalation import needs_escalation, sla_hours_for_risk
 from reasoning.schemas import ExceptionRecord, MatchResult, ReconReport
 
 
@@ -61,6 +62,11 @@ def _exception_rows(exceptions: list[ExceptionRecord]) -> list[dict]:
             "risk_score": e.risk_score,
             "suggested_resolution": e.suggested_resolution,
             "analyst_note": e.analyst_note,
+            # SLA enforcement: only escalated (risk >= threshold) exceptions
+            # actually land on the review queue and get a tracked deadline
+            # -- auto-resolved ones never wait on a human, so "N/A" here is
+            # correct, not a missing value.
+            "sla_hours": sla_hours_for_risk(e.risk_score) if needs_escalation(e) else "N/A (auto-resolved)",
         }
         for e in exceptions
     ]

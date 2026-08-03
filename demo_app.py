@@ -8,6 +8,7 @@ import streamlit as st
 
 from datagents.agents.ingestion_agent import ingest_sources
 from datagents.schemas import SourceConfig, SourceType
+from reasoning.agents.exception_escalation import needs_escalation, sla_hours_for_risk
 from recon_platform.graph.build import build_graph
 from recon_platform.reporting.report_builder import build_report_zip
 
@@ -288,7 +289,8 @@ if run_clicked and both_uploaded:
         st.caption(
             "Every unmatched transaction, classified and risk-scored by the "
             "real exception agent -- high-risk items are escalated to the "
-            "review queue, low-risk ones auto-resolve."
+            "review queue with an SLA deadline scaled by risk (24h / 72h / "
+            "7 days); low-risk ones auto-resolve with no deadline."
         )
         if exceptions:
             by_type = Counter(e.exc_type.value for e in exceptions)
@@ -304,6 +306,7 @@ if run_clicked and both_uploaded:
                         "type": e.exc_type.value,
                         "risk_score": e.risk_score,
                         "suggested_resolution": e.suggested_resolution,
+                        "sla_hours": sla_hours_for_risk(e.risk_score) if needs_escalation(e) else "N/A (auto-resolved)",
                     }
                     for e in exceptions
                 ],
