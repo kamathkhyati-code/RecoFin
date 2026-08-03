@@ -1,4 +1,4 @@
-﻿"""Ingestion Agent (A4/A5) — LangGraph node: run source tools, retry, merge.
+"""Ingestion Agent (A4/A5) — LangGraph node: run source tools, retry, merge.
 
 Picks the right source tool per SourceConfig.source_type, applies schema-drift
 handling via each config's `field_map`, retries transient fetch failures with
@@ -22,6 +22,19 @@ A16 (harden ingestion):
   options["password"] directly -- the schema already documented
   credentials_ref as "name of a secret, never the secret itself", but
   nothing actually enforced that until now.
+
+Fix #2 (flagged in A16/A18, actually fixed here): none of the three real
+source tools below ever raised FetchError -- they all catch their own
+failures internally into a graceful IssueRecord, so with_retry (used by
+_run_source) never actually retried a real transient failure despite the
+whole mechanism existing and being unit-tested in isolation. Fixed in
+_call_tool: a TOTAL failure (nothing read at all) whose message looks
+transient (timeout, connection, unreachable, refused, reset) is now
+raised as FetchError so the retry loop genuinely engages; a permanent
+failure (missing file, malformed row/shape) still degrades immediately,
+with no pointless retries. Distinguishing HTTP 5xx (worth retrying) from
+4xx (not) is intentionally out of scope here -- that needs the status
+code exposed out of api_fetch_tool, a bigger change than this fix.
 """
 from __future__ import annotations
 
@@ -62,25 +75,51 @@ def _resolve_sftp_credentials(config: SourceConfig, options: dict) -> tuple[str,
     return options.get("username", ""), options.get("password", "")
 
 
+_TRANSIENT_MARKERS = (
+    "timeout", "timed out", "connection", "unreachable", "reset", "refused",
+    "temporarily unavailable",
+)
+
+
+def _is_transient_failure(result: IngestResult) -> bool:
+    """A total failure (nothing read at all) whose message looks like a
+    transient network/connectivity problem -- worth retrying. A missing
+    file, malformed row, or bad response shape is not: retrying wouldn't
+    change the outcome, so those still degrade immediately, exactly as
+    before this fix.
+    """
+    if result.rows_read != 0 or result.transactions:
+        return False
+    if not result.issues:
+        return False
+    text = result.issues[0].message.lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
 def _call_tool(config: SourceConfig) -> IngestResult:
-    """Dispatch a single SourceConfig to its source tool (no retry)."""
+    """Dispatch a single SourceConfig to its source tool (no retry from
+    here -- but see _is_transient_failure: a transient total failure is
+    raised as FetchError so the caller's with_retry wrapper actually
+    retries it, instead of every failure silently becoming a one-shot
+    issue regardless of whether retrying could plausibly help.
+    """
     options = config.options or {}
     field_map = options.get("field_map")
 
     if config.source_type == SourceType.CSV:
-        return csv_read_tool(
+        result = csv_read_tool(
             config.location, source_name=config.name, field_map=field_map
         )
-    if config.source_type == SourceType.API:
-        return api_fetch_tool(
+    elif config.source_type == SourceType.API:
+        result = api_fetch_tool(
             config.location,
             source_name=config.name,
             timeout=options.get("timeout", 5.0),
             field_map=field_map,
         )
-    if config.source_type == SourceType.SFTP:
+    elif config.source_type == SourceType.SFTP:
         username, password = _resolve_sftp_credentials(config, options)
-        return sftp_fetch_tool(
+        result = sftp_fetch_tool(
             host=options.get("host", ""),
             remote_path=config.location,
             source_name=config.name,
@@ -91,7 +130,12 @@ def _call_tool(config: SourceConfig) -> IngestResult:
             sftp_client=options.get("sftp_client"),
             field_map=field_map,
         )
-    raise ValueError(f"Unsupported source_type: {config.source_type!r}")
+    else:
+        raise ValueError(f"Unsupported source_type: {config.source_type!r}")
+
+    if _is_transient_failure(result):
+        raise FetchError(result.issues[0].message)
+    return result
 
 
 def _run_source(
