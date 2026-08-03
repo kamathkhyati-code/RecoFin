@@ -1,4 +1,4 @@
-"""HITL interrupt and resume API.
+﻿"""HITL interrupt and resume API.
 
 The graph interrupts right before the "resolution" node, which represents
 an exception needing a human decision. An analyst's decision is injected
@@ -7,13 +7,20 @@ into state and the run resumes from the checkpoint.
 
 from __future__ import annotations
 
+from recon_platform.gateway.llm_gateway import LLMGateway
 from recon_platform.graph.build import build_graph
 from recon_platform.hitl.review_queue import review_queue
 
 
-def build_hitl_graph(checkpointer):
-    """Compile the graph so it pauses before the resolution (exception) node."""
-    return build_graph(checkpointer=checkpointer, interrupt_before=["resolution"])
+def build_hitl_graph(checkpointer, gateway: LLMGateway | None = None):
+    """Compile the graph so it pauses before the resolution (exception) node.
+
+    A19: gateway is forwarded to build_graph() (see its docstring) so HITL
+    runs can exercise LLM-dependent escalation paths (e.g. A14's
+    ambiguous-row review) with a MockLLMGateway in tests, the same way a
+    non-HITL build_graph() call would.
+    """
+    return build_graph(checkpointer=checkpointer, interrupt_before=["resolution"], gateway=gateway)
 
 
 def start_run_with_hitl(graph, run_id: str, initial_state: dict) -> dict:

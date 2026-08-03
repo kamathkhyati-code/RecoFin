@@ -12,11 +12,15 @@ MockLLMGateway, since no real LLM is configured in this project) should:
      same start_run_with_hitl/resume_with_decision API C14's exception
      flow already uses
 
-The gateway is injected via monkeypatching build.py's module-level
-_LLM_GATEWAY, not via state: a live gateway object isn't
-checkpointer-serializable, and HITL runs persist state to SQLite between
-pause and resume (confirmed by an actual msgpack TypeError on a first
-attempt that threaded the gateway through state instead).
+The gateway is injected via build_hitl_graph(cp, gateway=...) /
+build_graph(gateway=...) -- bound to the node callables via
+functools.partial at graph-construction time, not placed in state: a live
+gateway object isn't checkpointer-serializable, and HITL runs persist
+state to SQLite between pause and resume (confirmed by an actual msgpack
+TypeError on a first attempt that threaded the gateway through state
+instead). A19 reconciled this with Khyati's C19 fix, which wires the
+gateway the same way (an explicit param) rather than this file's earlier
+module-level _LLM_GATEWAY singleton -- see build.py's docstring.
 """
 
 from __future__ import annotations
@@ -45,16 +49,13 @@ def _ambiguous_txn(txn_id="A1"):
     )
 
 
-def test_ambiguous_row_escalates_to_resolution_and_registers_on_review_queue(monkeypatch):
-    monkeypatch.setattr(
-        "recon_platform.graph.build._LLM_GATEWAY",
-        MockLLMGateway('{"verdict": "review", "confidence": 0.3, "reason": "no reference to anchor it"}'),
-    )
+def test_ambiguous_row_escalates_to_resolution_and_registers_on_review_queue():
+    gateway = MockLLMGateway('{"verdict": "review", "confidence": 0.3, "reason": "no reference to anchor it"}')
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "checkpoints.db")
         with get_checkpointer(db_path) as cp:
-            graph = build_hitl_graph(cp)
+            graph = build_hitl_graph(cp, gateway=gateway)
             run_id = "a14-validation-hitl-1"
             initial_state = {
                 "run_id": run_id,
@@ -74,16 +75,13 @@ def test_ambiguous_row_escalates_to_resolution_and_registers_on_review_queue(mon
             assert item.resolved is False
 
 
-def test_ambiguous_row_resumes_and_completes_after_mock_approval(monkeypatch):
-    monkeypatch.setattr(
-        "recon_platform.graph.build._LLM_GATEWAY",
-        MockLLMGateway('{"verdict": "review", "confidence": 0.3, "reason": "no reference to anchor it"}'),
-    )
+def test_ambiguous_row_resumes_and_completes_after_mock_approval():
+    gateway = MockLLMGateway('{"verdict": "review", "confidence": 0.3, "reason": "no reference to anchor it"}')
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "checkpoints.db")
         with get_checkpointer(db_path) as cp:
-            graph = build_hitl_graph(cp)
+            graph = build_hitl_graph(cp, gateway=gateway)
             run_id = "a14-validation-hitl-2"
             initial_state = {
                 "run_id": run_id,
@@ -107,7 +105,7 @@ def test_ambiguous_row_resumes_and_completes_after_mock_approval(monkeypatch):
             assert item.resolved is True
 
 
-def test_clean_row_with_reference_does_not_escalate(monkeypatch):
+def test_clean_row_with_reference_does_not_escalate():
     """Control case: a row WITH a reference is never ambiguous in the first
     place (validate_transactions only judges reference-less rows), so it
     must sail straight through to normalization/matching, never pausing --
@@ -116,10 +114,7 @@ def test_clean_row_with_reference_does_not_escalate(monkeypatch):
     """
     from recon_platform.graph.build import build_graph
 
-    monkeypatch.setattr(
-        "recon_platform.graph.build._LLM_GATEWAY",
-        MockLLMGateway('{"verdict": "review", "confidence": 0.1, "reason": "should never be called"}'),
-    )
+    gateway = MockLLMGateway('{"verdict": "review", "confidence": 0.1, "reason": "should never be called"}')
 
     txn = Transaction(
         txn_id="A2",
@@ -131,7 +126,7 @@ def test_clean_row_with_reference_does_not_escalate(monkeypatch):
         source=SourceType.CSV,
     )
 
-    graph = build_graph()
+    graph = build_graph(gateway=gateway)
     result = graph.invoke({
         "run_id": "a14-clean-row",
         "period": "2026-06",

@@ -2,3 +2,18 @@ __pycache__/
 *.pyc
 .venv/
 *.egg-info/
+
+# A19 bug bash: secrets should only ever come from the environment, never
+# a committed file. GROQ_API_KEY and friends belong in a local .env that
+# must never be tracked.
+.env
+.env.*
+!.env.example
+*.db
+
+# A19 bug bash: AliasStore's cache (A9) persists to disk by design (a 2nd
+# run should make zero LLM calls), but that means it's local dev-instance
+# state, never something to commit -- found while bug-bashing when a
+# stray copy from a manual test run could silently change a later,
+# unrelated pytest run's outcome.
+alias_cache.json

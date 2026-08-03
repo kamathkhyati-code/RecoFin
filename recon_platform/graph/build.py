@@ -17,16 +17,47 @@ A13: ingestion_node now also records per-source ToolSpan metrics (rows
 in/out, retry attempts, duration, status) via ingest_sources_with_metrics
 and surfaces them as ingestion_metrics (declared in ReconState).
 
-A14: validation_node escalates ambiguous rows (ValidationFinding.escalate,
-via the module-level _LLM_GATEWAY) to human review through the same
-"resolution" HITL interrupt point B9's matching exceptions already use --
-see validation_node's docstring for why the gateway lives at module level
-rather than in state.
+A14: validation_node escalates ambiguous rows (ValidationFinding.escalate)
+to human review through the same "resolution" HITL interrupt point B9's
+matching exceptions already use -- see validation_node's docstring.
+
+A19 (bug bash, reconciling C19): build_graph() previously never actually
+wired an LLMGateway into validation_node/normalization_node/matching_node
+at all -- confirmed empirically (a MockLLMGateway received zero calls
+through a real graph.invoke(), despite an unresolvable counterparty name)
+while dry-running the full pipeline for this bug bash. Every LLM-dependent
+feature (A6/A7's ambiguous-row fallback, A9's entity alias resolution,
+B5's semantic matching) was individually built and tested standalone, but
+silently dead code in production. Fixed by threading an explicit
+gateway param through build_graph() into the three nodes via
+functools.partial, replacing the earlier module-level _LLM_GATEWAY
+singleton this file used to rely on: binding via functools.partial at
+graph-construction time is still checkpointer-safe (the gateway is bound
+to the node callable, never placed in graph state, so SQLite/msgpack
+never has to serialize it -- the same constraint that ruled out state in
+the first place), and it's more testable than monkeypatching a module
+attribute. Tests now call build_graph(gateway=MockLLMGateway(...))
+directly. This reconciles a real divergence found during A19: Khyatis
+C19 fix was built on a build.py that predated A14's escalation logic, so
+neither branch had both fixes together until now.
+
+A19 also found and fixed: validation_node's ambiguous-row LLM fallback
+and normalization_node's entity_alias_tool both sent untrusted, externally
+supplied text (a transaction's counterparty/reference field, from a
+CSV/API/SFTP feed someone else controls) straight to an LLM gateway with
+no defense against prompt injection -- a gap Khyatis C17 work had already
+found and fixed on the reasoning side (semantic_match_agent.py) and the
+guard module itself (recon_platform/guardrails/injection_guard.py) already
+existed on intern-c, but was never ported to the data-agent side. Fixed by
+wiring the same guard into datagents/agents/validation_agent.py and
+datagents/tools/normalization_tools.py -- see those files own docstrings.
 
 C4 adds: optional checkpointer for persistent, resumable state, and
 optional interrupt_before for pausing execution mid-run.
 """
 from __future__ import annotations
+
+import functools
 
 from langgraph.graph import StateGraph, START, END
 
@@ -39,6 +70,7 @@ from reasoning.agents.exception_escalation import escalate_exceptions
 from reasoning.agents.learning_agent import learning_agent
 from reasoning.match_subgraph import run_match_subgraph
 from reasoning.schemas import ReconReport
+from recon_platform.gateway.llm_gateway import LLMGateway
 from recon_platform.hitl.review_queue import pending_for_run
 from recon_platform.state import ReconState, AgentMessage, MessageRole, IssueRecord
 from recon_platform.graph.routing import validation_gate, matched_gate, close_ready_gate
@@ -85,9 +117,6 @@ def ingestion_node(state: ReconState) -> dict:
     transactions = list(book_result.transactions) + list(bank_result.transactions)
     new_issues = list(book_result.issues) + list(bank_result.issues)
     combined_issues = list(state.get("issues", [])) + new_issues
-    # A13: append rather than overwrite, since ingestion can re-run via the
-    # retry loop (validation_gate -> ingestion) -- each attempt's metrics
-    # should stay visible, not just the last one.
     combined_metrics = list(state.get("ingestion_metrics", [])) + [
         s.as_dict() for s in book_spans + bank_spans
     ]
@@ -107,7 +136,7 @@ def ingestion_node(state: ReconState) -> dict:
     }
 
 
-def validation_node(state: ReconState) -> dict:
+def validation_node(state: ReconState, gateway: LLMGateway | None = None) -> dict:
     """A11: real validation over the combined book+bank transaction set.
 
     A14: an ambiguous row the LLM flagged for human review
@@ -121,22 +150,20 @@ def validation_node(state: ReconState) -> dict:
     work unchanged -- that machinery only checks whether the graph paused
     before "resolution", not why.
 
-    Uses the module-level _LLM_GATEWAY (None by default, same pattern as
-    _ALIAS_STORE below) rather than reading a gateway off state: a live
-    gateway object isn't checkpointer-serializable (msgpack can't encode
-    it), and HITL runs persist state to SQLite between pause and resume --
-    confirmed this the hard way when a first attempt at threading the
-    gateway through state broke the checkpointer. Tests that need to
-    exercise the escalation path monkeypatch this module attribute
-    directly with a MockLLMGateway.
+    A19: gateway defaults to None so this stays directly callable exactly
+    as before (existing tests that call validation_node(state) are
+    unaffected) -- build_graph(gateway=...) binds it via functools.partial
+    when wiring the real graph, replacing the earlier module-level
+    _LLM_GATEWAY singleton this used to read (see build_graph's docstring
+    for why the switch, and why it's still checkpointer-safe).
 
-    `issues` has no reducer on ReconState, so returning it from this node
+    issues has no reducer on ReconState, so returning it from this node
     would silently replace whatever ingestion_node already put there.
     Concatenate instead so ingestion-level and validation-level issues
     both survive into the gate's check.
     """
     txns = state.get("transactions", [])
-    findings = validate_transactions(txns, gateway=_LLM_GATEWAY)
+    findings = validate_transactions(txns, gateway=gateway)
 
     def _severity(f) -> str:
         if f.escalate:
@@ -166,25 +193,26 @@ def validation_node(state: ReconState) -> dict:
 
 _ALIAS_STORE = AliasStore()
 
-# A14: None by default -- zero live LLM calls, matching every other
-# real-run assumption in this graph. Tests set this to a MockLLMGateway
-# (via monkeypatch) to exercise ambiguous-row escalation deterministically.
-_LLM_GATEWAY = None
 
-
-def normalization_node(state: ReconState) -> dict:
+def normalization_node(state: ReconState, gateway: LLMGateway | None = None) -> dict:
     """A11: real normalization, book and bank normalized separately so
     matching_node's book_transactions/source_transactions stay populated.
 
     Uses a module-level AliasStore so the alias cache (A9) actually
     persists across nodes within a run and across process runs, instead
     of rebuilding an empty cache every time this node fires.
+
+    A19: gateway defaults to None (see validation_node's docstring for
+    why, and build_graph's docstring for the full A19 gateway-wiring fix)
+    -- without it, entity_alias_tool's LLM resolution for a counterparty
+    name outside the hardcoded ALIAS_TABLE was silently unreachable
+    through the real graph, always falling back to the unresolved name.
     """
     book_txns = state.get("book_transactions") or []
     source_txns = state.get("source_transactions") or []
 
-    book_norm = normalize_transactions(book_txns, store=_ALIAS_STORE)
-    source_norm = normalize_transactions(source_txns, store=_ALIAS_STORE)
+    book_norm = normalize_transactions(book_txns, gateway=gateway, store=_ALIAS_STORE)
+    source_norm = normalize_transactions(source_txns, gateway=gateway, store=_ALIAS_STORE)
     normalized = book_norm + source_norm
 
     content = (
@@ -199,7 +227,7 @@ def normalization_node(state: ReconState) -> dict:
     }
 
 
-def matching_node(state: ReconState) -> dict:
+def matching_node(state: ReconState, gateway: LLMGateway | None = None) -> dict:
     """B11: real matching + exception classification (B10's sub-graph).
     Threads book_transactions/source_transactions through deterministic
     matching, hallucination-guarded calibration, and exception
@@ -208,12 +236,17 @@ def matching_node(state: ReconState) -> dict:
     directly to isolate the pause/resume mechanism from real matching) --
     stay a pure pass-through exactly like the original placeholder,
     rather than overwriting those manually-set counts with zero.
+
+    A19: gateway defaults to None (see validation_node's docstring for
+    why) -- without it, B5's LLM escalation for sub-threshold pairs was
+    silently unreachable through the real graph; matching_node only ever
+    ran the deterministic tools.
     """
     book = state.get("book_transactions") or []
     source = state.get("source_transactions") or []
     if not book and not source:
         return {"messages": [_log(MessageRole.MATCHING, "Matching complete.")]}
-    result = run_match_subgraph(dict(state))
+    result = run_match_subgraph(dict(state), gateway=gateway)
     matches = result["match_results"]
     exceptions = result["exceptions"]
     unmatched_total = len(result["unmatched_book"]) + len(result["unmatched_source"])
@@ -312,20 +345,30 @@ def learning_node(state: ReconState) -> dict:
     return {"rule_suggestions": suggestions, "messages": [_log(MessageRole.LEARNING, content)]}
 
 
-def build_graph(checkpointer=None, interrupt_before: list[str] | None = None):
+def build_graph(
+    checkpointer=None,
+    interrupt_before: list[str] | None = None,
+    gateway: LLMGateway | None = None,
+):
     """Assemble and compile the skeleton graph.
     checkpointer: pass a LangGraph checkpointer (e.g. SqliteSaver) to enable
         persistent, resumable state across process restarts. Omit for a
         stateless, non-resumable compile (used by earlier C3 tests).
     interrupt_before: node names to pause execution before. Used to test
         interrupt/resume behavior.
+    gateway: A19 fix (reconciling C19) -- an LLMGateway to bind into
+        validation_node/normalization_node/matching_node, so B5's semantic
+        matching, A6/A7's ambiguous-row fallback, and A9's entity alias
+        resolution are actually reachable through the real graph. Omit to
+        keep the run fully deterministic (no LLM calls at all, the prior
+        default behavior -- every existing caller is unaffected).
     """
     graph = StateGraph(ReconState)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("ingestion", ingestion_node)
-    graph.add_node("validation", validation_node)
-    graph.add_node("normalization", normalization_node)
-    graph.add_node("matching", matching_node)
+    graph.add_node("validation", functools.partial(validation_node, gateway=gateway))
+    graph.add_node("normalization", functools.partial(normalization_node, gateway=gateway))
+    graph.add_node("matching", functools.partial(matching_node, gateway=gateway))
     graph.add_node("resolution", resolution_node)
     graph.add_node("consolidation", consolidation_node)
     graph.add_node("learning", learning_node)
