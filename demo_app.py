@@ -91,6 +91,23 @@ hr {{ border-color: #e8e2d3; }}
 </style>
 """
 
+_SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
+_SERIF = 'Georgia, "Times New Roman", serif'
+
+_FONT_CSS = f"""
+<style>
+html, body, .stApp, .stApp * {{
+    font-family: {_SANS} !important;
+}}
+[data-testid="stDataFrame"] * {{
+    font-family: {_SANS} !important;
+}}
+.stApp .brand-wordmark {{
+    font-family: {_SERIF} !important;
+}}
+</style>
+"""
+
 _BUTTON_CSS = f"""
 <style>
 .stButton button[kind="primary"] {{
@@ -100,7 +117,6 @@ _BUTTON_CSS = f"""
     background-color: #0f9c8c; border-color: #0f9c8c;
 }}
 .brand-wordmark {{
-    font-family: Georgia, "Times New Roman", serif;
     font-size: 1.7rem;
     font-weight: 700;
     margin: 0;
@@ -113,6 +129,7 @@ _BUTTON_CSS = f"""
 """
 
 st.markdown(_DARK_CSS if st.session_state.dark_mode else _LIGHT_CSS, unsafe_allow_html=True)
+st.markdown(_FONT_CSS, unsafe_allow_html=True)
 st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
 
 
