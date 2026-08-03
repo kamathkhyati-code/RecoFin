@@ -47,7 +47,7 @@ def match(book, source):
     return matched, unmatched_book, unmatched_source
 
 
-st.set_page_config(page_title="RecoFin Demo", page_icon="💰", layout="wide")
+st.set_page_config(page_title="RecoFin Demo", layout="wide")
 
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
@@ -99,6 +99,16 @@ _BUTTON_CSS = f"""
 .stButton button[kind="primary"]:hover {{
     background-color: #0f9c8c; border-color: #0f9c8c;
 }}
+.brand-wordmark {{
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 1.7rem;
+    font-weight: 700;
+    margin: 0;
+    line-height: 1.2;
+}}
+[data-testid="stSidebar"] .stCaption p, [data-testid="stSidebar"] small {{
+    letter-spacing: 0.06em;
+}}
 </style>
 """
 
@@ -111,7 +121,7 @@ def _toggle_theme():
 
 
 with st.sidebar:
-    st.header("💰 RecoFin")
+    st.markdown('<p class="brand-wordmark">RecoFin</p>', unsafe_allow_html=True)
     st.caption("AGENTIC RECONCILIATION")
     st.write(
         "An agentic reconciliation system — it matches a company's books "
@@ -126,13 +136,13 @@ with st.sidebar:
     )
     st.caption("Demo running on sample book & bank data.")
     st.divider()
-    toggle_label = "☀️  Light mode" if st.session_state.dark_mode else "🌙  Dark mode"
+    toggle_label = "Light mode" if st.session_state.dark_mode else "Dark mode"
     st.button(toggle_label, on_click=_toggle_theme, use_container_width=True)
 
-st.title("💰 RecoFin — Reconciliation Demo")
+st.markdown('<p class="brand-wordmark" style="font-size: 2.2rem;">RecoFin — Reconciliation Demo</p>', unsafe_allow_html=True)
 st.write("**Ingest → Validate → Normalize → Match**")
 
-if st.button("▶ Run reconciliation", type="primary"):
+if st.button("Run reconciliation", type="primary"):
     book_res = ingest_sources([
         SourceConfig(
             name="book", source_type=SourceType.CSV,
@@ -169,7 +179,7 @@ if st.button("▶ Run reconciliation", type="primary"):
     st.bar_chart(chart)
 
     t1, t2, t3 = st.tabs(
-        ["✅ Results", "🔄 Normalization (before → after)", "📋 Raw & findings"]
+        ["Results", "Normalization (before → after)", "Raw & findings"]
     )
 
     with t1:
@@ -185,7 +195,7 @@ if st.button("▶ Run reconciliation", type="primary"):
             ],
             use_container_width=True,
         )
-        st.subheader("⚠️ Unmatched — needs review")
+        st.subheader("Unmatched — needs review")
         st.dataframe(rows(un_book + un_bank), use_container_width=True)
 
     with t2:
