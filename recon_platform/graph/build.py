@@ -40,6 +40,7 @@ from datagents.tools.validation_tools import ReasonCode
 from reasoning.agents.exception_escalation import escalate_exceptions
 from reasoning.agents.learning_agent import learning_agent
 from reasoning.match_subgraph import run_match_subgraph
+from reasoning.memory.match_memory import MatchMemory
 from reasoning.schemas import ReconReport
 from recon_platform.gateway.llm_gateway import LLMGateway
 from recon_platform.hitl.review_queue import pending_for_run
@@ -177,6 +178,14 @@ def validation_node(state: ReconState, gateway: LLMGateway | None = None) -> dic
 
 _ALIAS_STORE = AliasStore()
 
+# Integration audit (post-C20): module-level singleton so B13's match
+# memory actually persists across matching_node calls within a process
+# lifetime. Unlike _ALIAS_STORE, this stays in-memory only (chromadb's
+# default ephemeral Client, no PersistentClient path exists for match
+# memory yet) -- known gap, not silently-broken: growth resets on
+# process restart, but within one run of the server it works as tested.
+_MATCH_MEMORY = MatchMemory()
+
 
 def normalization_node(state: ReconState, gateway: LLMGateway | None = None) -> dict:
     """A11: real normalization, book and bank normalized separately so
@@ -225,12 +234,24 @@ def matching_node(state: ReconState, gateway: LLMGateway | None = None) -> dict:
     why) -- without it, B5's LLM escalation for sub-threshold pairs was
     silently unreachable through the real graph; matching_node only ever
     ran the deterministic tools.
+
+    Integration audit (post-C20): run_match_subgraph also accepts a
+    `memory` param (B13's match memory/RAG -- confirmed matches upserted,
+    retrieval boosts confidence, memory grows from its own history), but
+    nothing here ever passed one, so that whole capability was built and
+    tested (reasoning/tests/test_match_memory.py, test_match_subgraph.py)
+    yet silently unreachable through the real graph, same class of bug as
+    the gateway one above. Fixed by threading the module-level
+    _MATCH_MEMORY singleton below, same pattern as _ALIAS_STORE -- it's a
+    local embedding/retrieval step (HashingEmbeddingFunction), not an LLM
+    call, so unlike gateway it's safe to wire in unconditionally rather
+    than gating it behind an opt-in param.
     """
     book = state.get("book_transactions") or []
     source = state.get("source_transactions") or []
     if not book and not source:
         return {"messages": [_log(MessageRole.MATCHING, "Matching complete.")]}
-    result = run_match_subgraph(dict(state), gateway=gateway)
+    result = run_match_subgraph(dict(state), gateway=gateway, memory=_MATCH_MEMORY)
     matches = result["match_results"]
     exceptions = result["exceptions"]
     unmatched_total = len(result["unmatched_book"]) + len(result["unmatched_source"])

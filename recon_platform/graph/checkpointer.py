@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from recon_platform.gateway.llm_gateway import LLMGateway
 from recon_platform.graph.build import build_graph
 from recon_platform.graph.run_id import compute_run_id
 from recon_platform.state import ReconState
@@ -33,6 +34,7 @@ def run_pipeline(
     source_signature: str,
     checkpointer,
     initial_state: dict | None = None,
+    gateway: LLMGateway | None = None,
 ) -> dict:
     """Run the recon graph idempotently.
 
@@ -46,10 +48,19 @@ def run_pipeline(
     silently restarts the whole run from START, re-executing every node
     that had already completed (double-processing ingestion, etc.) even
     though the checkpointer already has their results saved.
+
+    Integration audit (post-C20): gateway defaults to None and is
+    forwarded to build_graph, same as build_hitl_graph -- without this,
+    the idempotent production entrypoint (the one with skip-if-complete
+    and resume-from-checkpoint semantics, i.e. the one a real scheduler
+    would actually call) never got a gateway either, even after C19 fixed
+    build_graph itself. Omit to keep a run fully deterministic, matching
+    every existing caller's expectation (e.g. the eval harness, which
+    wants deterministic baselines).
     """
     run_id = compute_run_id(period, source_signature)
     config = {"configurable": {"thread_id": run_id}}
-    graph = build_graph(checkpointer=checkpointer)
+    graph = build_graph(checkpointer=checkpointer, gateway=gateway)
 
     existing = graph.get_state(config)
     if existing.values and existing.values.get("close_ready") and not existing.next:
