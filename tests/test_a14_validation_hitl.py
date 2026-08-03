@@ -12,12 +12,15 @@ MockLLMGateway, since no real LLM is configured in this project) should:
      same start_run_with_hitl/resume_with_decision API C14's exception
      flow already uses
 
-The gateway is injected via the gateway param on build_hitl_graph/
-build_graph (bound into validation_node via functools.partial), not via
-state: a live gateway object isn't checkpointer-serializable, and HITL
-runs persist state to SQLite between pause and resume (confirmed by an
-actual msgpack TypeError on a first attempt that threaded the gateway
-through state instead).
+The gateway is injected via build_hitl_graph(cp, gateway=...) /
+build_graph(gateway=...) -- bound to the node callables via
+functools.partial at graph-construction time, not placed in state: a live
+gateway object isn't checkpointer-serializable, and HITL runs persist
+state to SQLite between pause and resume (confirmed by an actual msgpack
+TypeError on a first attempt that threaded the gateway through state
+instead). A19 reconciled this with Khyati's C19 fix, which wires the
+gateway the same way (an explicit param) rather than this file's earlier
+module-level _LLM_GATEWAY singleton -- see build.py's docstring.
 """
 
 from __future__ import annotations

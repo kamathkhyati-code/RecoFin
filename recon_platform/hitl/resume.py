@@ -1,4 +1,4 @@
-"""HITL interrupt and resume API.
+﻿"""HITL interrupt and resume API.
 
 The graph interrupts right before the "resolution" node, which represents
 an exception needing a human decision. An analyst's decision is injected

@@ -9,6 +9,13 @@ A13: `attempts_out`, if given a list, gets the total attempt count appended
 to it once the call resolves (succeeds or exhausts retries) -- lets a caller
 (ingestion_agent) record retry metrics without with_retry needing to know
 anything about metrics/observability itself.
+
+A16: RateLimiter enforces a minimum interval between consecutive calls to
+the same source -- e.g. a real SAP/Oracle/bank API that would throttle or
+ban a client hammering it on every retry attempt. Separate from with_retry
+(backoff delays a specific failed call; RateLimiter paces every call,
+successful or not) and separate from FetchError/timeouts (a source can be
+healthy and still need pacing).
 """
 from __future__ import annotations
 
@@ -63,3 +70,42 @@ def with_retry(
                 extra={"attempt": attempt, "delay": delay, "error": str(exc)},
             )
             sleep(delay)
+
+
+class RateLimiter:
+    """Enforces a minimum interval between consecutive `wait()` calls.
+
+    Stateful and per-instance: share one RateLimiter across calls to the
+    same source to pace them; use a separate instance (or none) per source
+    to avoid one slow-moving source throttling an unrelated one.
+
+    `sleep`/`now` are injectable so tests can verify pacing without a real
+    test taking wall-clock seconds.
+    """
+
+    def __init__(
+        self,
+        min_interval_seconds: float,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.min_interval_seconds = min_interval_seconds
+        self._sleep = sleep
+        self._now = now
+        self._last_call: float | None = None
+
+    def wait(self) -> None:
+        """Block (via injected sleep) until min_interval_seconds have
+        elapsed since the last wait() call, then record this call's time.
+        """
+        now = self._now()
+        if self._last_call is not None:
+            elapsed = now - self._last_call
+            remaining = self.min_interval_seconds - elapsed
+            if remaining > 0:
+                self._sleep(remaining)
+                now = now + remaining  # predicted, not re-read -- keeps
+                # tests deterministic with a fake `now` that doesn't
+                # auto-advance just because `sleep` was called.
+        self._last_call = now

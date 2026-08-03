@@ -23,6 +23,37 @@ interrupt point B9's matching exceptions already use -- see
 validation_node's docstring for why the gateway is threaded as a
 parameter rather than read off state.
 
+A19 (bug bash, reconciling C19): build_graph() previously never actually
+wired an LLMGateway into validation_node/normalization_node/matching_node
+at all -- confirmed empirically (a MockLLMGateway received zero calls
+through a real graph.invoke(), despite an unresolvable counterparty name)
+while dry-running the full pipeline for this bug bash. Every LLM-dependent
+feature (A6/A7's ambiguous-row fallback, A9's entity alias resolution,
+B5's semantic matching) was individually built and tested standalone, but
+silently dead code in production. Fixed by threading an explicit
+gateway param through build_graph() into the three nodes via
+functools.partial, replacing the earlier module-level _LLM_GATEWAY
+singleton this file used to rely on: binding via functools.partial at
+graph-construction time is still checkpointer-safe (the gateway is bound
+to the node callable, never placed in graph state, so SQLite/msgpack
+never has to serialize it -- the same constraint that ruled out state in
+the first place), and it's more testable than monkeypatching a module
+attribute. Tests now call build_graph(gateway=MockLLMGateway(...))
+directly. This reconciles a real divergence found during A19: Khyatis
+C19 fix was built on a build.py that predated A14's escalation logic, so
+neither branch had both fixes together until now.
+
+A19 also found and fixed: validation_node's ambiguous-row LLM fallback
+and normalization_node's entity_alias_tool both sent untrusted, externally
+supplied text (a transaction's counterparty/reference field, from a
+CSV/API/SFTP feed someone else controls) straight to an LLM gateway with
+no defense against prompt injection -- a gap Khyatis C17 work had already
+found and fixed on the reasoning side (semantic_match_agent.py) and the
+guard module itself (recon_platform/guardrails/injection_guard.py) already
+existed on intern-c, but was never ported to the data-agent side. Fixed by
+wiring the same guard into datagents/agents/validation_agent.py and
+datagents/tools/normalization_tools.py -- see those files own docstrings.
+
 C4 adds: optional checkpointer for persistent, resumable state, and
 optional interrupt_before for pausing execution mid-run.
 """
@@ -89,9 +120,6 @@ def ingestion_node(state: ReconState) -> dict:
     transactions = list(book_result.transactions) + list(bank_result.transactions)
     new_issues = list(book_result.issues) + list(bank_result.issues)
     combined_issues = list(state.get("issues", [])) + new_issues
-    # A13: append rather than overwrite, since ingestion can re-run via the
-    # retry loop (validation_gate -> ingestion) -- each attempt's metrics
-    # should stay visible, not just the last one.
     combined_metrics = list(state.get("ingestion_metrics", [])) + [
         s.as_dict() for s in book_spans + bank_spans
     ]
@@ -134,7 +162,7 @@ def validation_node(state: ReconState, gateway: LLMGateway | None = None) -> dic
     escalation path pass gateway=MockLLMGateway(...) directly, either to
     validation_node itself or to build_graph/build_hitl_graph.
 
-    `issues` has no reducer on ReconState, so returning it from this node
+    issues has no reducer on ReconState, so returning it from this node
     would silently replace whatever ingestion_node already put there.
     Concatenate instead so ingestion-level and validation-level issues
     both survive into the gate's check.
@@ -361,12 +389,12 @@ def build_graph(
         stateless, non-resumable compile (used by earlier C3 tests).
     interrupt_before: node names to pause execution before. Used to test
         interrupt/resume behavior.
-    gateway: C19 fix -- an LLMGateway to bind into validation_node/
-        normalization_node/matching_node, so B5's semantic matching,
-        A6/A7's ambiguous-row fallback, and A9's entity alias resolution
-        are actually reachable through the real graph. Omit to keep the
-        run fully deterministic (no LLM calls at all, the prior default
-        behavior -- every existing caller is unaffected).
+    gateway: A19 fix (reconciling C19) -- an LLMGateway to bind into
+        validation_node/normalization_node/matching_node, so B5's semantic
+        matching, A6/A7's ambiguous-row fallback, and A9's entity alias
+        resolution are actually reachable through the real graph. Omit to
+        keep the run fully deterministic (no LLM calls at all, the prior
+        default behavior -- every existing caller is unaffected).
     """
     graph = StateGraph(ReconState)
     graph.add_node("supervisor", supervisor_node)

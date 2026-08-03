@@ -8,6 +8,13 @@ A9: entity_alias_tool now checks a persistent AliasStore before calling the
 LLM, and writes the LLM's answer back to the store. A second run against the
 same store reads the cache and makes zero LLM calls for names it already
 resolved.
+
+A19: before an unresolved name reaches the LLM, it's checked against C17's
+prompt-injection guard (ported here from the reasoning side, where it was
+already wired into semantic matching but not here) -- a counterparty name
+is untrusted external input from a CSV/API/SFTP feed someone else
+controls. A flagged name falls through to the unresolved-but-not-
+fabricated name instead of ever reaching the gateway.
 """
 from __future__ import annotations
 from decimal import ROUND_HALF_UP, Decimal
@@ -69,9 +76,9 @@ def entity_alias_tool(
         if cached is not None:
             return cached
     if gateway is not None and not looks_like_injection(name):
-        # C17: a name that looks like it's trying to manipulate the model
-        # never reaches the LLM -- falls through to the unresolved
-        # (but not fabricated) name instead.
+        # A19 (ported from C17): a name that looks like it's trying to
+        # manipulate the model never reaches the LLM -- falls through to
+        # the unresolved (but not fabricated) name instead.
         prompt = (
             "Return ONLY the canonical company name for this variant, "
             f"no extra text: {name}"

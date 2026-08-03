@@ -13,14 +13,24 @@ source would crash the whole ingestion run rather than degrading to a
 recorded issue like every other failure mode (bad file, bad row, dead API)
 already does. That gap only became visible while wiring retry-attempt
 capture here; test_ingestion_observability.py covers it as a regression.
+
+A16 (harden ingestion):
+- Optional per-source RateLimiter, applied before every attempt (including
+  retries) so a real SAP/Oracle/bank API isn't hammered.
+- SFTP credentials now resolve through SourceConfig.credentials_ref (an
+  env var name) when set, rather than trusting options["username"]/
+  options["password"] directly -- the schema already documented
+  credentials_ref as "name of a secret, never the secret itself", but
+  nothing actually enforced that until now.
 """
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from datagents.observability import ToolSpan, timed
-from datagents.resilience import FetchError, with_retry
+from datagents.resilience import FetchError, RateLimiter, with_retry
 from datagents.schemas import IngestResult, SourceConfig, SourceType
 from datagents.tools.api_fetch_tool import api_fetch_tool
 from datagents.tools.csv_read_tool import csv_read_tool
@@ -28,6 +38,28 @@ from datagents.tools.sftp_fetch_tool import sftp_fetch_tool
 from recon_platform.state import IssueRecord
 
 logger = logging.getLogger("datagents.ingestion.agent")
+
+
+def _resolve_sftp_credentials(config: SourceConfig, options: dict) -> tuple[str, str]:
+    """Resolve SFTP username/password.
+
+    If credentials_ref is set, it names an environment variable holding
+    "username:password" -- the secret itself lives in the environment,
+    never in the config or in source. Falls back to options["username"]/
+    options["password"] only when credentials_ref isn't set (local dev/
+    tests with an injected fake sftp_client, which never actually
+    authenticates with these values anyway).
+    """
+    if config.credentials_ref:
+        raw = os.environ.get(config.credentials_ref, "")
+        if ":" in raw:
+            username, _, password = raw.partition(":")
+            return username, password
+        logger.warning(
+            "credentials_ref_unset_or_malformed",
+            extra={"credentials_ref": config.credentials_ref, "source": config.name},
+        )
+    return options.get("username", ""), options.get("password", "")
 
 
 def _call_tool(config: SourceConfig) -> IngestResult:
@@ -47,12 +79,13 @@ def _call_tool(config: SourceConfig) -> IngestResult:
             field_map=field_map,
         )
     if config.source_type == SourceType.SFTP:
+        username, password = _resolve_sftp_credentials(config, options)
         return sftp_fetch_tool(
             host=options.get("host", ""),
             remote_path=config.location,
             source_name=config.name,
-            username=options.get("username", ""),
-            password=options.get("password", ""),
+            username=username,
+            password=password,
             port=options.get("port", 22),
             local_dir=options.get("local_dir", ".sftp_staging"),
             sftp_client=options.get("sftp_client"),
@@ -61,7 +94,9 @@ def _call_tool(config: SourceConfig) -> IngestResult:
     raise ValueError(f"Unsupported source_type: {config.source_type!r}")
 
 
-def _run_source(config: SourceConfig) -> tuple[IngestResult, ToolSpan]:
+def _run_source(
+    config: SourceConfig, rate_limiter: RateLimiter | None = None
+) -> tuple[IngestResult, ToolSpan]:
     """Run one source with transient-failure retry, log the outcome, and
     return both the IngestResult and a ToolSpan recording rows/retries/timing.
 
@@ -69,15 +104,23 @@ def _run_source(config: SourceConfig) -> tuple[IngestResult, ToolSpan]:
     degrades to an IngestResult carrying a single error issue (row_ref=None,
     i.e. a genuinely batch-level/critical issue per validation_gate), same
     as every other source-level failure mode.
+
+    rate_limiter.wait() (A16) runs before EVERY attempt, including retries
+    -- pacing applies to each real call to the source, not once per config.
     """
     options = config.options or {}
     attempts: list[int] = []
     status = "ok"
 
+    def _call() -> IngestResult:
+        if rate_limiter is not None:
+            rate_limiter.wait()
+        return _call_tool(config)
+
     with timed() as timer:
         try:
             result = with_retry(
-                lambda: _call_tool(config),
+                _call,
                 retries=options.get("retries", 3),
                 base_delay=options.get("retry_base_delay", 0.5),
                 attempts_out=attempts,
@@ -120,7 +163,9 @@ def _run_source(config: SourceConfig) -> tuple[IngestResult, ToolSpan]:
     return result, span
 
 
-def ingest_sources(configs: list[SourceConfig]) -> IngestResult:
+def ingest_sources(
+    configs: list[SourceConfig], rate_limiter: RateLimiter | None = None
+) -> IngestResult:
     """Run every source (with retry) and merge results into one IngestResult.
 
     Metrics (ToolSpan per source) are discarded here -- this function's
@@ -129,7 +174,7 @@ def ingest_sources(configs: list[SourceConfig]) -> IngestResult:
     """
     merged = IngestResult(source_name="merged")
     for config in configs:
-        result, _span = _run_source(config)
+        result, _span = _run_source(config, rate_limiter=rate_limiter)
         merged.transactions.extend(result.transactions)
         merged.issues.extend(result.issues)
         merged.rows_read += result.rows_read
@@ -137,13 +182,13 @@ def ingest_sources(configs: list[SourceConfig]) -> IngestResult:
 
 
 def ingest_sources_with_metrics(
-    configs: list[SourceConfig],
+    configs: list[SourceConfig], rate_limiter: RateLimiter | None = None
 ) -> tuple[IngestResult, list[ToolSpan]]:
     """Same as ingest_sources, but also returns a ToolSpan per source."""
     merged = IngestResult(source_name="merged")
     spans: list[ToolSpan] = []
     for config in configs:
-        result, span = _run_source(config)
+        result, span = _run_source(config, rate_limiter=rate_limiter)
         merged.transactions.extend(result.transactions)
         merged.issues.extend(result.issues)
         merged.rows_read += result.rows_read
