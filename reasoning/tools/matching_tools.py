@@ -13,6 +13,14 @@ lookup; tolerance_tool and fuzzy_tool bucket by currency and binary-search
 a sorted amount index for O((n+m) log m) candidate discovery. Normalized
 reference strings are computed once per transaction and reused, instead of
 being recomputed on every comparison (the "cache hot paths" step).
+
+B19 (bug bash): duplicate transaction IDs within book or within source used
+to cause a legitimate match to be silently dropped -- the greedy assigner
+sees the id already "used" by an earlier candidate sharing that same
+(duplicated) id and quietly skips the second one, with no error or
+warning. That is a real reconciliation risk: a genuine match disappears
+with no trace. Each tool now fails loudly instead, raising ValueError the
+moment it sees a duplicate id in either input list.
 """
 from __future__ import annotations
 
@@ -30,6 +38,26 @@ def _norm_ref(ref: str | None) -> str:
     if not ref:
         return ""
     return " ".join(ref.strip().lower().split())
+
+
+def _assert_unique_ids(transactions: list[Transaction], label: str) -> None:
+    """Fail loudly if `transactions` contains a duplicate txn_id.
+
+    A duplicate id breaks the greedy assigner's one-match-per-id
+    invariant: the second transaction sharing an id silently loses any
+    match it would otherwise have gotten, with no error raised. That is
+    a data-integrity problem upstream, not a matching decision, so it
+    must never resolve silently.
+    """
+    seen: set[str] = set()
+    for t in transactions:
+        if t.txn_id in seen:
+            raise ValueError(
+                f"duplicate txn_id '{t.txn_id}' found in {label} transactions -- "
+                "matching requires unique ids per side, otherwise a real match "
+                "can be silently dropped"
+            )
+        seen.add(t.txn_id)
 
 
 def _greedy(candidates: list[tuple[float, MatchResult]]) -> list[MatchResult]:
@@ -84,6 +112,9 @@ def exact_tool(
     book: list[Transaction], source: list[Transaction]
 ) -> list[MatchResult]:
     """Match on identical currency, amount, date, and reference."""
+    _assert_unique_ids(book, "book")
+    _assert_unique_ids(source, "source")
+
     source_by_key: dict = {}
     for s in source:
         key = (s.currency, s.amount, s.date, _norm_ref(s.reference))
@@ -123,6 +154,9 @@ def tolerance_tool(
     date_window: int = 2,
 ) -> list[MatchResult]:
     """Match within an amount tolerance and a +/- date window."""
+    _assert_unique_ids(book, "book")
+    _assert_unique_ids(source, "source")
+
     buckets = _bucket_by_currency_sorted_amount(source)
     candidates: list[tuple[float, MatchResult]] = []
 
@@ -174,6 +208,9 @@ def fuzzy_tool(
     amount_tol: Decimal = Decimal("0.05"),
 ) -> list[MatchResult]:
     """Match on fuzzy reference similarity with a close-amount guard."""
+    _assert_unique_ids(book, "book")
+    _assert_unique_ids(source, "source")
+
     buckets = _bucket_by_currency_sorted_amount(source)
     source_norm_ref = {s.txn_id: _norm_ref(s.reference) for s in source}
 
