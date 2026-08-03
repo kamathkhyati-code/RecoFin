@@ -1,0 +1,11 @@
+# Minimal dependencies for demo_app.py specifically (Streamlit Community
+# Cloud deployment). The full dev environment (langgraph, chromadb,
+# langchain-groq, etc.) is declared in pyproject.toml and installed via
+# `pip install -e ".[dev]"` -- demo_app.py doesn't need any of that, so
+# this file stays deliberately separate and minimal rather than reusing
+# the full dependency set, to keep the Cloud build fast and reliable.
+streamlit
+pandas
+pydantic
+httpx
+paramiko
