@@ -7,13 +7,24 @@ into state and the run resumes from the checkpoint.
 
 from __future__ import annotations
 
+from recon_platform.gateway.llm_gateway import LLMGateway
 from recon_platform.graph.build import build_graph
 from recon_platform.hitl.review_queue import review_queue
 
 
-def build_hitl_graph(checkpointer):
-    """Compile the graph so it pauses before the resolution (exception) node."""
-    return build_graph(checkpointer=checkpointer, interrupt_before=["resolution"])
+def build_hitl_graph(checkpointer, gateway: LLMGateway | None = None):
+    """Compile the graph so it pauses before the resolution (exception) node.
+
+    gateway: forwarded to build_graph so A14's validation-escalation path
+    (and B5/A9's LLM fallbacks) are reachable through HITL runs too, not
+    just plain build_graph() runs -- see build.py's validation_node
+    docstring for why this has to be a parameter, not read off state.
+    """
+    return build_graph(
+        checkpointer=checkpointer,
+        interrupt_before=["resolution"],
+        gateway=gateway,
+    )
 
 
 def start_run_with_hitl(graph, run_id: str, initial_state: dict) -> dict:

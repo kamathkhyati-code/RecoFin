@@ -5,9 +5,18 @@ MatchResults (greedy, best-first within the tool). Every result carries a
 confidence, a rule name, and a human-readable rationale. All three tools are
 registered in the shared ToolRegistry so the matching agent can resolve them
 by name (Architecture tab: run strategy tools strongest-first).
+
+B17: candidates are found via bucketed/indexed lookups instead of full
+n*m nested-loop scans, so this scales to 10k+ transactions per side --
+exact_tool buckets by (currency, amount, date, reference) for O(n+m)
+lookup; tolerance_tool and fuzzy_tool bucket by currency and binary-search
+a sorted amount index for O((n+m) log m) candidate discovery. Normalized
+reference strings are computed once per transaction and reused, instead of
+being recomputed on every comparison (the "cache hot paths" step).
 """
 from __future__ import annotations
 
+import bisect
 import difflib
 from decimal import Decimal
 
@@ -24,16 +33,46 @@ def _norm_ref(ref: str | None) -> str:
 
 
 def _greedy(candidates: list[tuple[float, MatchResult]]) -> list[MatchResult]:
-    """Assign candidates best-first, one book and one source txn each."""
+    """Assign candidates best-first, one book and one source txn each.
+
+    Sorted by confidence descending, then by (book_txn_id, source_txn_id)
+    as a deterministic tie-break -- this makes the result independent of
+    the order candidates were discovered in, which matters once B17's
+    bucketed lookups no longer produce candidates in strict nested-loop
+    order.
+    """
     used_book: set[str] = set()
     used_source: set[str] = set()
     out: list[MatchResult] = []
-    for _, mr in sorted(candidates, key=lambda c: c[0], reverse=True):
+    ordered = sorted(
+        candidates,
+        key=lambda c: (-c[0], c[1].book_txn_id, c[1].source_txn_id),
+    )
+    for _, mr in ordered:
         if mr.book_txn_id in used_book or mr.source_txn_id in used_source:
             continue
         used_book.add(mr.book_txn_id)
         used_source.add(mr.source_txn_id)
         out.append(mr)
+    return out
+
+
+def _bucket_by_currency_sorted_amount(
+    transactions: list[Transaction],
+) -> dict:
+    """Group transactions by currency, each group sorted by amount.
+
+    Returns {currency: (sorted_transactions, sorted_amounts)} so callers
+    can bisect the amounts list to find an amount-tolerance window in
+    O(log m) instead of scanning every transaction.
+    """
+    by_currency: dict = {}
+    for t in transactions:
+        by_currency.setdefault(t.currency, []).append(t)
+    out = {}
+    for currency, txns in by_currency.items():
+        txns_sorted = sorted(txns, key=lambda t: t.amount)
+        out[currency] = (txns_sorted, [t.amount for t in txns_sorted])
     return out
 
 
@@ -45,14 +84,18 @@ def exact_tool(
     book: list[Transaction], source: list[Transaction]
 ) -> list[MatchResult]:
     """Match on identical currency, amount, date, and reference."""
+    source_by_key: dict = {}
+    for s in source:
+        key = (s.currency, s.amount, s.date, _norm_ref(s.reference))
+        source_by_key.setdefault(key, []).append(s)
+
     candidates: list[tuple[float, MatchResult]] = []
     for b in book:
-        for s in source:
-            if b.currency != s.currency or b.amount != s.amount or b.date != s.date:
-                continue
-            bref = _norm_ref(b.reference)
-            if not bref or bref != _norm_ref(s.reference):
-                continue
+        bref = _norm_ref(b.reference)
+        if not bref:
+            continue
+        key = (b.currency, b.amount, b.date, bref)
+        for s in source_by_key.get(key, []):
             mr = MatchResult(
                 book_txn_id=b.txn_id,
                 source_txn_id=s.txn_id,
@@ -80,11 +123,17 @@ def tolerance_tool(
     date_window: int = 2,
 ) -> list[MatchResult]:
     """Match within an amount tolerance and a +/- date window."""
+    buckets = _bucket_by_currency_sorted_amount(source)
     candidates: list[tuple[float, MatchResult]] = []
+
     for b in book:
-        for s in source:
-            if b.currency != s.currency:
-                continue
+        bucket = buckets.get(b.currency)
+        if not bucket:
+            continue
+        txns_sorted, amounts = bucket
+        lo = bisect.bisect_left(amounts, b.amount - amount_tol)
+        hi = bisect.bisect_right(amounts, b.amount + amount_tol)
+        for s in txns_sorted[lo:hi]:
             amt_delta = abs(b.amount - s.amount)
             if amt_delta > amount_tol:
                 continue
@@ -125,16 +174,25 @@ def fuzzy_tool(
     amount_tol: Decimal = Decimal("0.05"),
 ) -> list[MatchResult]:
     """Match on fuzzy reference similarity with a close-amount guard."""
+    buckets = _bucket_by_currency_sorted_amount(source)
+    source_norm_ref = {s.txn_id: _norm_ref(s.reference) for s in source}
+
     candidates: list[tuple[float, MatchResult]] = []
     for b in book:
-        for s in source:
-            if b.currency != s.currency:
-                continue
+        bref = _norm_ref(b.reference)
+        if not bref:
+            continue
+        bucket = buckets.get(b.currency)
+        if not bucket:
+            continue
+        txns_sorted, amounts = bucket
+        lo = bisect.bisect_left(amounts, b.amount - amount_tol)
+        hi = bisect.bisect_right(amounts, b.amount + amount_tol)
+        for s in txns_sorted[lo:hi]:
             if abs(b.amount - s.amount) > amount_tol:
                 continue
-            bref = _norm_ref(b.reference)
-            sref = _norm_ref(s.reference)
-            if not bref or not sref:
+            sref = source_norm_ref[s.txn_id]
+            if not sref:
                 continue
             ratio = difflib.SequenceMatcher(None, bref, sref).ratio()
             if ratio < min_ratio:

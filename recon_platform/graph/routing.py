@@ -1,4 +1,4 @@
-"""Standalone conditional router functions for the recon graph.
+﻿"""Standalone conditional router functions for the recon graph.
 
 Kept separate from build_graph() so each routing decision can be
 unit-tested directly with synthetic state, without running the full graph.
@@ -29,21 +29,37 @@ def _has_critical_issue(issues) -> bool:
     )
 
 
+def _has_escalation_needed(issues) -> bool:
+    """A14: an ambiguous validation row the LLM flagged for human review
+    (validation_node tags these severity="review"). Distinct from
+    _has_critical_issue: these aren't batch-level failures a retry could
+    fix, they're individual rows that genuinely need a human decision --
+    so they go straight to resolution (HITL), never through the
+    ingestion retry loop.
+    """
+    return any(getattr(issue, "severity", None) == "review" for issue in issues)
+
+
 def validation_gate(state: dict) -> str:
     """After validation: retry ingestion, escalate to HITL, or proceed.
 
-    - No critical issues: proceed to normalization.
+    - No critical/escalation issues: proceed to normalization.
     - Critical issues present and retries remain: loop back to ingestion.
     - Critical issues present and retries exhausted: escalate to resolution (HITL).
+    - No critical issues, but an ambiguous row needs human review (A14):
+      escalate to resolution (HITL) directly, no retry loop involved.
     """
     issues = state.get("issues") or []
-    if not _has_critical_issue(issues):
-        return "normalization"
+    if _has_critical_issue(issues):
+        retry_count = state.get("retry_count", 0)
+        if retry_count < MAX_VALIDATION_RETRIES:
+            return "ingestion"
+        return "resolution"
 
-    retry_count = state.get("retry_count", 0)
-    if retry_count < MAX_VALIDATION_RETRIES:
-        return "ingestion"
-    return "resolution"
+    if _has_escalation_needed(issues):
+        return "resolution"
+
+    return "normalization"
 
 
 def matched_gate(state: dict) -> str:
