@@ -87,6 +87,14 @@ html, body, .stApp, .stApp * {{
 .stApp .brand-wordmark {{
     font-family: {_SERIF} !important;
 }}
+/* Streamlit's icons (sidebar collapse arrow, expander chevron, upload
+icon) are rendered as ligature text in a Material Symbols icon font --
+the blanket override above turns that ligature text into literal,
+visible words ("keyboard_double_arrow_left") instead of a glyph. Exempt
+icon elements so they keep their own font. */
+[data-testid="stIconMaterial"] {{
+    font-family: "Material Symbols Rounded" !important;
+}}
 </style>
 """
 

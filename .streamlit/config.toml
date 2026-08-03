@@ -1,0 +1,8 @@
+# Default is 200MB per file, too small for the synthetic 5k-10k row book/
+# bank CSVs the demo is meant to accept. Raised to 1GB. Streamlit
+# Community Cloud's free tier may still enforce its own platform-level
+# ceiling regardless of this setting -- that's outside this repo's
+# control, but this is the app-side lever, set as high as reasonably
+# useful for CSV uploads.
+[server]
+maxUploadSize = 1024
