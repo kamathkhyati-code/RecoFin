@@ -18,6 +18,13 @@
 # and this import path never runs. Included here so the gateway path
 # works the moment a key is added, rather than needing a second
 # requirements.txt fix.
+#
+# sqlalchemy + bcrypt + psycopg: recon_platform/auth -- real user
+# registration/login. sqlalchemy always loads (used unconditionally for
+# both the SQLite fallback and a configured Postgres). psycopg is only
+# actually connected to when DATABASE_URL is set in secrets; included
+# unconditionally for the same reason langchain-groq is -- so the path
+# works the moment the secret is added, no second requirements.txt fix.
 streamlit
 pandas
 pydantic
@@ -26,3 +33,6 @@ paramiko
 langgraph
 chromadb
 langchain-groq
+sqlalchemy
+bcrypt
+psycopg[binary]

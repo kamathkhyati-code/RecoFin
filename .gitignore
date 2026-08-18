@@ -11,6 +11,12 @@ __pycache__/
 !.env.example
 *.db
 
+# Streamlit's own secrets convention (GROQ_API_KEY, DATABASE_URL locally
+# during auth testing, etc.) -- same rule as .env above, just Streamlit's
+# specific filename for it. Was missing here entirely until the auth
+# work below needed a local secrets.toml to test the DATABASE_URL path.
+.streamlit/secrets.toml
+
 # C19: AliasStore's cache (A9) persists to disk by design (a 2nd run
 # should make zero LLM calls), but that means it's local dev-instance
 # state, never something to commit -- found while bug-bashing when a

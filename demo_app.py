@@ -10,6 +10,8 @@ import streamlit as st
 from datagents.agents.ingestion_agent import ingest_sources
 from datagents.schemas import SourceConfig, SourceType
 from reasoning.agents.exception_escalation import needs_escalation, sla_hours_for_risk
+from recon_platform.auth.db import is_ephemeral, make_engine
+from recon_platform.auth.service import AuthError, authenticate, register_user
 from recon_platform.graph.build import build_graph
 from recon_platform.reporting.report_builder import build_report_zip
 
@@ -56,9 +58,33 @@ def _build_gateway():
         return None
 
 
+def _resolve_database_url() -> str | None:
+    """Same optional-secret pattern as _build_gateway: DATABASE_URL is
+    the user's own external Postgres (Supabase/Neon/etc, provisioned by
+    them, not something this app can set up on its own). Absent -> the
+    local SQLite fallback in recon_platform.auth.db, which works but is
+    wiped on every redeploy on Streamlit Community Cloud."""
+    try:
+        return st.secrets.get("DATABASE_URL")
+    except Exception:
+        return None
+
+
+@st.cache_resource
+def _get_auth_engine():
+    """Cached like _build_gateway's client -- without @st.cache_resource
+    this would reopen a connection on every single script rerun (every
+    button click, every form submit anywhere in the app)."""
+    return make_engine(_resolve_database_url())
+
+
 st.set_page_config(page_title="RecoFin Demo", layout="wide")
 
 gateway = _build_gateway()
+auth_engine = _get_auth_engine()
+registration_disabled = is_ephemeral(_resolve_database_url())
+
+st.session_state.setdefault("user", None)
 
 _ACCENT = "#14b8a6"
 _ACCENT_BRIGHT = "#2dd4bf"
@@ -125,13 +151,13 @@ icon elements so they keep their own font. */
 
 _BUTTON_CSS = f"""
 <style>
-.stButton button[kind="primary"] {{
+.stButton button[kind="primary"], [data-testid^="stBaseButton-primary"] {{
     background-color: {_ACCENT}; border-color: {_ACCENT}; color: #04140f;
     font-weight: 600;
     box-shadow: 0 2px 12px rgba(20, 184, 166, 0.25);
     transition: box-shadow 0.15s ease, transform 0.15s ease;
 }}
-.stButton button[kind="primary"]:hover {{
+.stButton button[kind="primary"]:hover, [data-testid^="stBaseButton-primary"]:hover {{
     background-color: {_ACCENT_BRIGHT}; border-color: {_ACCENT_BRIGHT};
     box-shadow: 0 4px 20px rgba(45, 212, 191, 0.4);
     transform: translateY(-1px);
@@ -156,9 +182,194 @@ _BUTTON_CSS = f"""
 </style>
 """
 
+_LANDING_CSS = f"""
+<style>
+.hero-section {{
+    text-align: center;
+    padding: 3.5rem 1rem 2.5rem;
+}}
+.hero-title {{
+    font-family: {_SERIF};
+    font-size: 3rem;
+    font-weight: 700;
+    line-height: 1.15;
+    margin: 0 0 0.75rem;
+    background: linear-gradient(135deg, #f2f2f2 0%, {_ACCENT_BRIGHT} 150%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}}
+.hero-subtitle {{
+    font-size: 1.15rem;
+    color: #a8a8b0;
+    max-width: 640px;
+    margin: 0 auto;
+    line-height: 1.6;
+}}
+.feature-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin: 2.5rem 0;
+}}
+.feature-card {{
+    background-color: #131318; border: 1px solid #24242c; border-top: 2px solid {_ACCENT};
+    border-radius: 12px; padding: 1.25rem;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    transition: border-color 0.15s ease, transform 0.15s ease;
+}}
+.feature-card:hover {{ border-color: {_ACCENT_BRIGHT}; transform: translateY(-2px); }}
+.feature-icon {{
+    width: 42px; height: 42px; border-radius: 10px;
+    background: rgba(20, 184, 166, 0.12); color: {_ACCENT_BRIGHT};
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 0.75rem;
+}}
+.feature-title {{ font-weight: 700; color: #f2f2f2; margin-bottom: 0.35rem; }}
+.feature-desc {{ font-size: 0.9rem; color: #9a9aa2; line-height: 1.5; margin: 0; }}
+.pipeline-row {{
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+    gap: 0.4rem; margin: 1.5rem 0 2.5rem;
+}}
+.pipeline-chip {{
+    background-color: #131318; border: 1px solid #24242c; border-radius: 999px;
+    padding: 0.45rem 1rem; font-size: 0.85rem; color: #d0d0d6; font-weight: 600;
+}}
+.pipeline-arrow {{ color: {_ACCENT}; font-size: 1.1rem; }}
+.auth-card {{
+    max-width: 420px; margin: 0 auto; background-color: #101014;
+    border: 1px solid #24242c; border-radius: 14px; padding: 1.75rem;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}}
+.welcome-banner {{
+    display: flex; align-items: center; justify-content: space-between;
+    background-color: #131318; border: 1px solid #24242c; border-left: 3px solid {_ACCENT};
+    border-radius: 10px; padding: 0.9rem 1.25rem; margin-bottom: 1.5rem;
+}}
+</style>
+"""
+
 st.markdown(_DARK_CSS, unsafe_allow_html=True)
 st.markdown(_FONT_CSS, unsafe_allow_html=True)
 st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
+st.markdown(_LANDING_CSS, unsafe_allow_html=True)
+
+
+_FEATURES = [
+    (
+        '<path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/>',
+        "Data Ingestion",
+        "Real ingestion from CSV, API, and SFTP sources, with schema-drift handling and retry-on-failure built in.",
+    ),
+    (
+        '<circle cx="9" cy="12" r="5"/><circle cx="15" cy="12" r="5"/>',
+        "Intelligent Matching",
+        "Exact, tolerance, and fuzzy matching, boosted by a growing match-memory and optional LLM-assisted matching for ambiguous pairs.",
+    ),
+    (
+        '<path d="M12 3l9 16H3z"/><path d="M12 9v5"/><circle cx="12" cy="17" r="0.6" fill="currentColor"/>',
+        "Exception Management",
+        "Every unmatched item is classified and risk-scored, with an SLA deadline that scales by risk -- nothing sits unreviewed indefinitely.",
+    ),
+    (
+        '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 13l2 2 4-5"/>',
+        "Reporting",
+        "Live close-readiness at a glance, with a one-click audit-ready export (summary + every underlying table) for any run.",
+    ),
+]
+
+_PIPELINE_STAGES = ["Ingest", "Validate", "Normalize", "Match", "Classify", "Report"]
+
+
+def _icon_svg(path: str) -> str:
+    return (
+        f'<svg width="22" height="22" viewBox="0 0 24 24" fill="none" '
+        f'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
+        f'stroke-linejoin="round">{path}</svg>'
+    )
+
+
+def _render_landing() -> None:
+    # Every fragment below is built as a single unindented line before
+    # being handed to st.markdown -- CommonMark treats 4+ leading spaces
+    # as a code block, and once one HTML block ends at a blank line, any
+    # indented content that follows gets swallowed as a code block
+    # instead of rendered HTML. Multi-line indented triple-quoted f-strings
+    # tripped exactly this: the first card rendered, every card after it
+    # showed as raw escaped text. Keeping everything on one line per
+    # st.markdown call sidesteps the ambiguity entirely.
+    hero_html = (
+        '<div class="hero-section">'
+        '<p class="brand-wordmark" style="font-size: 3.2rem; display:inline-block;">RecoFin</p>'
+        '<div class="hero-title">Agentic financial reconciliation, actually agentic.</div>'
+        '<div class="hero-subtitle">A real multi-agent pipeline reconciles your books '
+        "against your bank — ingesting, validating, normalizing, matching, classifying "
+        "exceptions with risk scores and SLA deadlines, and producing an audit-ready "
+        "report — all on a compiled LangGraph, not a mocked-up demo.</div>"
+        "</div>"
+    )
+    st.markdown(hero_html, unsafe_allow_html=True)
+
+    cards_html = "".join(
+        f'<div class="feature-card"><div class="feature-icon">{_icon_svg(path)}</div>'
+        f'<div class="feature-title">{title}</div>'
+        f'<p class="feature-desc">{desc}</p></div>'
+        for path, title, desc in _FEATURES
+    )
+    st.markdown(f'<div class="feature-grid">{cards_html}</div>', unsafe_allow_html=True)
+
+    chips = []
+    for i, stage in enumerate(_PIPELINE_STAGES):
+        chips.append(f'<span class="pipeline-chip">{stage}</span>')
+        if i < len(_PIPELINE_STAGES) - 1:
+            chips.append('<span class="pipeline-arrow">&#8594;</span>')
+    st.markdown(f'<div class="pipeline-row">{"".join(chips)}</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="auth-card">', unsafe_allow_html=True)
+    login_tab, register_tab = st.tabs(["Log in", "Register"])
+
+    with login_tab:
+        with st.form("login_form"):
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
+        if submitted:
+            try:
+                user = authenticate(auth_engine, username, password)
+                st.session_state.user = {"username": user.username, "email": user.email}
+                st.rerun()
+            except AuthError as e:
+                st.error(str(e))
+
+    with register_tab:
+        if registration_disabled:
+            st.warning(
+                "Registration is temporarily disabled on this deployment -- no "
+                "persistent database is configured (DATABASE_URL), so accounts "
+                "created here would be wiped on the next deploy. Log in still "
+                "works if you already have an account from before the last "
+                "redeploy. Ask the app owner to configure a persistent database "
+                "to re-enable sign-up."
+            )
+        else:
+            with st.form("register_form"):
+                reg_username = st.text_input("Username", key="register_username")
+                reg_email = st.text_input("Email", key="register_email")
+                reg_password = st.text_input("Password", type="password", key="register_password")
+                reg_submitted = st.form_submit_button(
+                    "Create account", type="primary", use_container_width=True
+                )
+            if reg_submitted:
+                try:
+                    user = register_user(auth_engine, reg_username, reg_email, reg_password)
+                    st.session_state.user = {"username": user.username, "email": user.email}
+                    st.rerun()
+                except AuthError as e:
+                    st.error(str(e))
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+if st.session_state.user is None:
+    _render_landing()
+    st.stop()
 
 
 with st.sidebar:
@@ -188,6 +399,18 @@ with st.sidebar:
         st.caption("LLM gateway: connected — semantic matching and ambiguous-row review are live.")
     else:
         st.caption("LLM gateway: not configured — deterministic-only mode.")
+
+_greeting_col, _logout_col = st.columns([5, 1])
+with _greeting_col:
+    st.markdown(
+        f'<div class="welcome-banner">Hey <strong>{st.session_state.user["username"]}</strong> '
+        f"— ready to reconcile.</div>",
+        unsafe_allow_html=True,
+    )
+with _logout_col:
+    if st.button("Log out", use_container_width=True):
+        st.session_state.user = None
+        st.rerun()
 
 st.markdown('<p class="brand-wordmark" style="font-size: 2.2rem;">RecoFin — Reconciliation Demo</p>', unsafe_allow_html=True)
 st.write("**Ingest → Validate → Normalize → Match → Classify exceptions**, run on the real compiled graph.")
