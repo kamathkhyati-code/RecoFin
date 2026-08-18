@@ -1,3 +1,4 @@
+import os
 import tempfile
 import uuid
 from collections import Counter
@@ -29,49 +30,71 @@ def rows(txns):
     ]
 
 
+@st.cache_resource
+def _build_gateway():
+    """Construct a real Groq gateway if GROQ_API_KEY is set in this
+    deployment's secrets (share.streamlit.io -> app -> Settings ->
+    Secrets); returns None (deterministic-only, the prior default
+    behavior) if it's absent, or if construction fails for any reason
+    (bad/expired key) -- a broken key degrades gracefully to the
+    always-tested no-gateway path instead of crashing the whole demo.
+    Cached so this only runs once per server process, not once per
+    script rerun.
+    """
+    try:
+        api_key = st.secrets.get("GROQ_API_KEY")
+    except Exception:
+        api_key = None
+    if not api_key:
+        return None
+    try:
+        os.environ.setdefault("GROQ_API_KEY", api_key)
+        from recon_platform.gateway.llm_gateway import GroqLLMGateway
+
+        return GroqLLMGateway()
+    except Exception:
+        return None
+
+
 st.set_page_config(page_title="RecoFin Demo", layout="wide")
 
-if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = False
+gateway = _build_gateway()
 
 _ACCENT = "#14b8a6"
+_ACCENT_BRIGHT = "#2dd4bf"
 
+# Dark-only by design (see .streamlit/config.toml's [theme] base="dark") --
+# light mode was unreadable and this gets presented live, so there's no
+# toggle to accidentally switch away from it mid-demo.
 _DARK_CSS = f"""
 <style>
-.stApp {{ background-color: #0a0a0d; color: #e5e5e5; }}
-[data-testid="stSidebar"] {{ background-color: #101014; border-right: 1px solid #202027; }}
+.stApp {{
+    background: radial-gradient(ellipse 1200px 800px at 50% -10%, #10151a 0%, #0a0a0d 55%);
+    color: #e5e5e5;
+}}
+[data-testid="stSidebar"] {{ background-color: #0d0d11; border-right: 1px solid #1f1f26; }}
 [data-testid="stSidebar"] * {{ color: #e5e5e5; }}
 [data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] small {{ color: #8a8a92 !important; }}
 .stApp h1, .stApp h2, .stApp h3 {{ color: #f2f2f2; }}
 [data-testid="stMetric"] {{
-    background-color: #131318; border: 1px solid #24242c; border-radius: 10px;
-    padding: 14px 16px;
+    background-color: #131318; border: 1px solid #24242c; border-top: 2px solid {_ACCENT};
+    border-radius: 10px; padding: 14px 16px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    transition: border-color 0.15s ease, transform 0.15s ease;
 }}
-[data-testid="stMetricValue"] {{ color: {_ACCENT}; }}
+[data-testid="stMetric"]:hover {{ border-color: {_ACCENT_BRIGHT}; transform: translateY(-1px); }}
+[data-testid="stMetricValue"] {{ color: {_ACCENT_BRIGHT}; }}
 [data-testid="stMetricLabel"] {{ color: #9a9aa2; }}
 [data-testid="stDataFrame"] {{ color-scheme: dark; border: 1px solid #24242c; border-radius: 8px; }}
-[data-testid="stFileUploader"] {{ background-color: #131318; border: 1px solid #24242c; border-radius: 8px; padding: 8px; }}
-.stTabs [data-baseweb="tab"] {{ color: #9a9aa2; }}
-.stTabs [aria-selected="true"] {{ color: {_ACCENT} !important; }}
-hr {{ border-color: #24242c; }}
-</style>
-"""
-
-_LIGHT_CSS = f"""
-<style>
-.stApp {{ background-color: #faf6ee; color: #2b2b28; }}
-[data-testid="stSidebar"] {{ background-color: #f1ece0; border-right: 1px solid #e3ddcd; }}
-[data-testid="stSidebar"] .stCaption, [data-testid="stSidebar"] small {{ color: #8a8474 !important; }}
-[data-testid="stMetric"] {{
-    background-color: #ffffff; border: 1px solid #e8e2d3; border-radius: 10px;
-    padding: 14px 16px;
+[data-testid="stFileUploader"] {{
+    background-color: #131318; border: 1px solid #24242c; border-radius: 8px; padding: 8px;
+    transition: border-color 0.15s ease;
 }}
-[data-testid="stMetricValue"] {{ color: #0f766e; }}
-[data-testid="stMetricLabel"] {{ color: #7a7568; }}
-[data-testid="stDataFrame"] {{ border: 1px solid #e8e2d3; border-radius: 8px; }}
-[data-testid="stFileUploader"] {{ background-color: #ffffff; border: 1px solid #e8e2d3; border-radius: 8px; padding: 8px; }}
-.stTabs [aria-selected="true"] {{ color: #0f766e !important; }}
-hr {{ border-color: #e8e2d3; }}
+[data-testid="stFileUploader"]:hover {{ border-color: #34343e; }}
+.stTabs [data-baseweb="tab"] {{ color: #9a9aa2; }}
+.stTabs [aria-selected="true"] {{ color: {_ACCENT_BRIGHT} !important; }}
+.stTabs [data-baseweb="tab-highlight"] {{ background-color: {_ACCENT} !important; }}
+hr {{ border-color: #24242c; }}
 </style>
 """
 
@@ -104,15 +127,28 @@ _BUTTON_CSS = f"""
 <style>
 .stButton button[kind="primary"] {{
     background-color: {_ACCENT}; border-color: {_ACCENT}; color: #04140f;
+    font-weight: 600;
+    box-shadow: 0 2px 12px rgba(20, 184, 166, 0.25);
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
 }}
 .stButton button[kind="primary"]:hover {{
-    background-color: #0f9c8c; border-color: #0f9c8c;
+    background-color: {_ACCENT_BRIGHT}; border-color: {_ACCENT_BRIGHT};
+    box-shadow: 0 4px 20px rgba(45, 212, 191, 0.4);
+    transform: translateY(-1px);
 }}
+.stDownloadButton button {{
+    border-color: #2c2c34; transition: border-color 0.15s ease;
+}}
+.stDownloadButton button:hover {{ border-color: {_ACCENT}; color: {_ACCENT_BRIGHT}; }}
 .brand-wordmark {{
     font-size: 1.7rem;
     font-weight: 700;
     margin: 0;
     line-height: 1.2;
+    background: linear-gradient(135deg, #f2f2f2 0%, {_ACCENT_BRIGHT} 140%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
 }}
 [data-testid="stSidebar"] .stCaption p, [data-testid="stSidebar"] small {{
     letter-spacing: 0.06em;
@@ -120,13 +156,9 @@ _BUTTON_CSS = f"""
 </style>
 """
 
-st.markdown(_DARK_CSS if st.session_state.dark_mode else _LIGHT_CSS, unsafe_allow_html=True)
+st.markdown(_DARK_CSS, unsafe_allow_html=True)
 st.markdown(_FONT_CSS, unsafe_allow_html=True)
 st.markdown(_BUTTON_CSS, unsafe_allow_html=True)
-
-
-def _toggle_theme():
-    st.session_state.dark_mode = not st.session_state.dark_mode
 
 
 with st.sidebar:
@@ -152,8 +184,10 @@ with st.sidebar:
         st.caption("Book: txn_id, date, amount, currency, counterparty, reference")
         st.caption("Bank: transaction_id, value_date, amount, ccy, counterparty, reference")
     st.divider()
-    toggle_label = "Light mode" if st.session_state.dark_mode else "Dark mode"
-    st.button(toggle_label, on_click=_toggle_theme, use_container_width=True)
+    if gateway is not None:
+        st.caption("LLM gateway: connected — semantic matching and ambiguous-row review are live.")
+    else:
+        st.caption("LLM gateway: not configured — deterministic-only mode.")
 
 st.markdown('<p class="brand-wordmark" style="font-size: 2.2rem;">RecoFin — Reconciliation Demo</p>', unsafe_allow_html=True)
 st.write("**Ingest → Validate → Normalize → Match → Classify exceptions**, run on the real compiled graph.")
@@ -185,7 +219,7 @@ if run_clicked and both_uploaded:
         ])
 
         with st.spinner("Running the real multi-agent pipeline (ingest, validate, normalize, match, classify)..."):
-            graph = build_graph()
+            graph = build_graph(gateway=gateway)
             run_id = f"demo-{uuid.uuid4().hex[:8]}"
             result = graph.invoke({
                 "run_id": run_id,
@@ -335,12 +369,18 @@ if run_clicked and both_uploaded:
 
     with t4:
         st.subheader("Validation findings")
-        st.caption(
-            "Four deterministic checks always run (completeness, dedupe, "
-            "format, FX). Ambiguous-row LLM review is disabled in this "
-            "demo (no gateway configured), so only deterministic findings "
-            "appear here."
-        )
+        if gateway is not None:
+            st.caption(
+                "Four deterministic checks always run (completeness, dedupe, "
+                "format, FX), plus LLM review for ambiguous (no-reference) rows "
+                "since a gateway is configured for this run."
+            )
+        else:
+            st.caption(
+                "Four deterministic checks always run (completeness, dedupe, "
+                "format, FX). Ambiguous-row LLM review is disabled (no gateway "
+                "configured), so only deterministic findings appear here."
+            )
         if findings:
             st.dataframe(
                 [

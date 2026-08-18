@@ -9,10 +9,15 @@
 # which pulls in langgraph directly and chromadb transitively (via
 # reasoning.memory.match_memory's module-level MatchMemory singleton).
 # Traced by installing only the base set below in a clean venv and
-# resolving each ModuleNotFoundError one at a time -- these two are
-# genuinely everything else demo_app.py needs; it runs gateway-less
-# (no LLM calls), so langchain/langchain-groq/langgraph-checkpoint-sqlite
-# are NOT required.
+# resolving each ModuleNotFoundError one at a time -- langgraph-checkpoint-
+# sqlite is NOT required (demo runs without a checkpointer).
+#
+# langchain-groq: only imported lazily, inside GroqLLMGateway.__init__,
+# when GROQ_API_KEY is actually configured in this deployment's secrets
+# (see demo_app.py's _build_gateway) -- without a key, gateway stays None
+# and this import path never runs. Included here so the gateway path
+# works the moment a key is added, rather than needing a second
+# requirements.txt fix.
 streamlit
 pandas
 pydantic
@@ -20,3 +25,4 @@ httpx
 paramiko
 langgraph
 chromadb
+langchain-groq

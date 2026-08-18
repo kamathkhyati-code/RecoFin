@@ -6,3 +6,9 @@
 # useful for CSV uploads.
 [server]
 maxUploadSize = 1024
+
+# Light mode was unreadable (low-contrast text) and this is presented
+# live, so dark is the only theme -- no toggle in the UI to accidentally
+# switch away from it mid-demo.
+[theme]
+base = "dark"
