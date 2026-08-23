@@ -57,6 +57,15 @@ def make_engine(database_url: str | None = None) -> Engine:
     reconnecting.
     """
     url = database_url or f"sqlite:///{DEFAULT_SQLITE_PATH}"
+    # A bare "postgresql://" (or "postgres://", the scheme some providers
+    # still hand out) makes SQLAlchemy default to the psycopg2 driver.
+    # This project installs psycopg (v3) instead, so force that driver
+    # explicitly -- otherwise a real DATABASE_URL fails at engine-creation
+    # time with ModuleNotFoundError: No module named 'psycopg2'.
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    elif url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url[len("postgres://"):]
     engine = create_engine(url, pool_pre_ping=True)
     metadata.create_all(engine)
     return engine
