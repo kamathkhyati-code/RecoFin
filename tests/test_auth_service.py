@@ -75,6 +75,21 @@ def test_invalid_email_rejected(engine):
         register_user(engine, "frank", "not-an-email", "correcthorse123")
 
 
+@pytest.mark.parametrize(
+    "bad_email",
+    [
+        "a@b.c",  # single-char TLD -- the old "@" + "." check let this through
+        "a@.com",  # empty label before the dot
+        "a@b..com",  # empty label between dots
+        "@nobody.com",  # empty local part
+        "a@-bad.com",  # label can't start with a hyphen
+    ],
+)
+def test_malformed_email_domain_rejected(engine, bad_email):
+    with pytest.raises(AuthError, match="valid email"):
+        register_user(engine, "gwen", bad_email, "correcthorse123")
+
+
 def test_account_locks_after_repeated_failed_attempts(engine):
     register_user(engine, "grace", "grace@example.com", "correcthorse123")
 

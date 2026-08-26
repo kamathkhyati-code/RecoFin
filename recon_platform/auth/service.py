@@ -15,6 +15,7 @@ limiting, email verification.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +28,12 @@ from recon_platform.auth.db import users_table
 
 MIN_PASSWORD_LENGTH = 8
 MIN_USERNAME_LENGTH = 3
+
+# Not full RFC 5322 (nothing short of a real send-and-confirm loop truly
+# validates an email) -- but rejects the obvious garbage the old "@" in
+# email and "." in domain check let through, like "a@b.c" or trailing
+# dots, by requiring a real label.label.tld-shaped domain.
+_EMAIL_RE = re.compile(r"^[^@\s]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$")
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 
@@ -58,7 +65,7 @@ def register_user(engine: Engine, username: str, email: str, password: str) -> U
 
     if len(username) < MIN_USERNAME_LENGTH:
         raise AuthError(f"Username must be at least {MIN_USERNAME_LENGTH} characters.")
-    if "@" not in email or "." not in email.split("@")[-1]:
+    if not _EMAIL_RE.match(email):
         raise AuthError("Enter a valid email address.")
     if len(password) < MIN_PASSWORD_LENGTH:
         raise AuthError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
