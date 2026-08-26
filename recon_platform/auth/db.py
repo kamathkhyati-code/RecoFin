@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, create_engine
+from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
 metadata = MetaData()
@@ -36,13 +36,43 @@ users_table = Table(
     Column("password_hash", String(255), nullable=False),
     Column("created_at", DateTime, default=_utcnow),
     # Basic brute-force throttling (v1 scope). Deliberately deferred:
-    # IP-based rate limiting, password reset flow, email verification --
-    # see service.py's docstring.
+    # IP-based rate limiting, email verification -- see service.py's
+    # docstring.
     Column("failed_attempts", Integer, default=0, nullable=False),
     Column("locked_until", DateTime, nullable=True),
+    # Password reset. A hash (sha256, not bcrypt -- the token is already
+    # high-entropy secrets.token_urlsafe output, not a human-guessable
+    # password, so it doesn't need bcrypt's deliberate slowness) of the
+    # single currently-live reset token, if any. One column pair rather
+    # than a separate table: only one reset request needs to be live per
+    # user at a time, and a new request simply overwrites the old one.
+    Column("reset_token_hash", String(64), nullable=True),
+    Column("reset_token_expires_at", DateTime, nullable=True),
 )
 
 DEFAULT_SQLITE_PATH = "recofin_users.db"
+
+# Columns added after the table's first deployment. metadata.create_all()
+# only creates missing *tables*, never ALTERs an existing one -- so on a
+# database that already has a users table from before these columns
+# existed (true of this project's live Supabase instance the moment this
+# shipped), create_all() alone would silently leave them missing and
+# every reset-token read/write would fail with UndefinedColumn. This is
+# a deliberately minimal hand-rolled migration (no Alembic dependency)
+# rather than a general migration framework, since it's the only schema
+# change this project has needed past the initial create.
+_MIGRATION_COLUMNS = [
+    ("reset_token_hash", "VARCHAR(64)"),
+    ("reset_token_expires_at", "TIMESTAMP"),
+]
+
+
+def _run_migrations(engine: Engine) -> None:
+    existing = {col["name"] for col in inspect(engine).get_columns("users")}
+    with engine.begin() as conn:
+        for name, ddl_type in _MIGRATION_COLUMNS:
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl_type}"))
 
 
 def make_engine(database_url: str | None = None) -> Engine:
@@ -68,6 +98,7 @@ def make_engine(database_url: str | None = None) -> Engine:
         url = "postgresql+psycopg://" + url[len("postgres://"):]
     engine = create_engine(url, pool_pre_ping=True)
     metadata.create_all(engine)
+    _run_migrations(engine)
     return engine
 
 

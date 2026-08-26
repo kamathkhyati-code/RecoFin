@@ -11,7 +11,14 @@ from datagents.agents.ingestion_agent import ingest_sources
 from datagents.schemas import SourceConfig, SourceType
 from reasoning.agents.exception_escalation import needs_escalation, sla_hours_for_risk
 from recon_platform.auth.db import is_ephemeral, make_engine
-from recon_platform.auth.service import AuthError, authenticate, register_user
+from recon_platform.auth.mailer import MailError, send_password_reset_email
+from recon_platform.auth.service import (
+    AuthError,
+    authenticate,
+    generate_password_reset_token,
+    register_user,
+    reset_password_with_token,
+)
 from recon_platform.graph.build import build_graph
 from recon_platform.reporting.report_builder import build_report_zip
 
@@ -78,11 +85,36 @@ def _get_auth_engine():
     return make_engine(_resolve_database_url())
 
 
+def _resolve_resend_api_key() -> str | None:
+    """Same optional-secret pattern as GROQ_API_KEY/DATABASE_URL. Absent
+    -> password reset still works, but falls back to showing the reset
+    link directly in the UI instead of emailing it (useful for local
+    dev/testing without a mail account at all)."""
+    try:
+        return st.secrets.get("RESEND_API_KEY")
+    except Exception:
+        return None
+
+
+def _resolve_app_url() -> str | None:
+    """Optional secret for building an absolute, clickable reset link in
+    the outgoing email. Streamlit doesn't expose its own public URL at
+    runtime, so this has to be configured rather than derived. Absent ->
+    the email (if sent) includes the raw token as text instead of a
+    link, with instructions to paste it into the Reset tab."""
+    try:
+        return st.secrets.get("APP_URL")
+    except Exception:
+        return None
+
+
 st.set_page_config(page_title="RecoFin Demo", layout="wide")
 
 gateway = _build_gateway()
 auth_engine = _get_auth_engine()
 registration_disabled = is_ephemeral(_resolve_database_url())
+resend_api_key = _resolve_resend_api_key()
+app_url = _resolve_app_url()
 
 st.session_state.setdefault("user", None)
 
@@ -339,6 +371,41 @@ def _render_landing() -> None:
             except AuthError as e:
                 st.error(str(e))
 
+        with st.expander("Forgot your password?"):
+            with st.form("forgot_password_form"):
+                forgot_email = st.text_input("Email", key="forgot_password_email")
+                forgot_submitted = st.form_submit_button("Send reset link", use_container_width=True)
+            if forgot_submitted:
+                token = generate_password_reset_token(auth_engine, forgot_email)
+                if token is not None and resend_api_key:
+                    reset_link = (
+                        f"{app_url.rstrip('/')}/?reset_token={token}" if app_url
+                        else f"(APP_URL not configured -- reset token: {token})"
+                    )
+                    try:
+                        send_password_reset_email(resend_api_key, forgot_email.strip().lower(), reset_link)
+                    except MailError:
+                        # Swallowed deliberately: showing the same generic
+                        # message below either way avoids leaking whether
+                        # the send failed because the address doesn't
+                        # exist vs. a real provider hiccup.
+                        pass
+                st.info("If that email is registered, we've sent a reset link. Check your inbox.")
+                if token is not None and not resend_api_key:
+                    # Local/dev fallback only, gated on no mail service
+                    # being configured -- this branch necessarily reveals
+                    # that the email matched an account (only real matches
+                    # get a token to show), which is fine for solo local
+                    # testing but is exactly why it's unreachable once
+                    # RESEND_API_KEY is set on a real deployment.
+                    st.caption(
+                        "No email service configured on this deployment -- "
+                        "here's the reset link directly instead:"
+                    )
+                    st.code(
+                        f"{app_url.rstrip('/')}/?reset_token={token}" if app_url else token
+                    )
+
     with register_tab:
         if registration_disabled:
             st.warning(
@@ -367,8 +434,32 @@ def _render_landing() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _render_reset_password(prefill_token: str) -> None:
+    st.markdown('<div class="hero-section">', unsafe_allow_html=True)
+    st.markdown('<p class="brand-wordmark" style="font-size: 3.2rem; display:inline-block;">RecoFin</p>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('<div class="auth-card">', unsafe_allow_html=True)
+    st.markdown('<p class="brand-wordmark" style="font-size: 1.4rem;">Set a new password</p>', unsafe_allow_html=True)
+    with st.form("reset_password_form"):
+        token_input = st.text_input("Reset token", value=prefill_token, key="reset_token_input")
+        new_password = st.text_input("New password", type="password", key="reset_new_password")
+        reset_submitted = st.form_submit_button("Set new password", type="primary", use_container_width=True)
+    if reset_submitted:
+        try:
+            reset_password_with_token(auth_engine, token_input.strip(), new_password)
+            st.query_params.clear()
+            st.success("Password updated -- you can log in with your new password now.")
+        except AuthError as e:
+            st.error(str(e))
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 if st.session_state.user is None:
-    _render_landing()
+    _reset_token_param = st.query_params.get("reset_token", "")
+    if _reset_token_param:
+        _render_reset_password(_reset_token_param)
+    else:
+        _render_landing()
     st.stop()
 
 

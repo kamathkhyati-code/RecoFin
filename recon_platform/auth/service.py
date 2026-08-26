@@ -8,14 +8,20 @@ real UNIQUE constraint as the source of truth for "already taken"
 (TOCTOU-safe under concurrent registration, not just a SELECT-then-INSERT
 precheck), and basic per-account lockout after repeated failed attempts.
 
-Deliberately deferred, not silently missing: password reset (until it
-exists, resetting password_hash is a manual DB operation), IP-based rate
-limiting, email verification.
+Password reset lives here too (generate_password_reset_token /
+reset_password_with_token) -- actual email delivery is a separate concern
+(recon_platform/auth/mailer.py), same split as this module not knowing
+about Streamlit.
+
+Deliberately deferred, not silently missing: IP-based rate limiting,
+email verification.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -36,6 +42,7 @@ MIN_USERNAME_LENGTH = 3
 _EMAIL_RE = re.compile(r"^[^@\s]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$")
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
+RESET_TOKEN_TTL_MINUTES = 30
 
 # Checked against on the "no such user" path so that branch costs about
 # the same as a real user's wrong-password branch, rather than returning
@@ -131,3 +138,66 @@ def authenticate(engine: Engine, username: str, password: str) -> User:
         raise AuthError(error)
     assert user is not None
     return user
+
+
+def _hash_token(token: str) -> str:
+    # sha256, not bcrypt: the token is already a high-entropy
+    # secrets.token_urlsafe value, not a human-guessable password, so it
+    # doesn't need bcrypt's deliberate slowness -- a fast hash is fine
+    # for "does this token match the one on file", and this runs on
+    # every reset-password submission, not just once at signup.
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def generate_password_reset_token(engine: Engine, email: str) -> str | None:
+    """Returns the raw reset token if the email matches an account, or
+    None if it doesn't. Callers must show the same message either way
+    ("if that email is registered, we've sent a link") -- returning None
+    here is not itself a safe thing to reveal to the requester."""
+    email = email.strip().lower()
+    token = secrets.token_urlsafe(32)
+    token_hash = _hash_token(token)
+    expires_at = _utcnow() + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            select(users_table.c.id).where(users_table.c.email == email)
+        ).first()
+        if row is None:
+            return None
+        conn.execute(
+            users_table.update()
+            .where(users_table.c.id == row[0])
+            .values(reset_token_hash=token_hash, reset_token_expires_at=expires_at)
+        )
+    return token
+
+
+def reset_password_with_token(engine: Engine, token: str, new_password: str) -> None:
+    if len(new_password) < MIN_PASSWORD_LENGTH:
+        raise AuthError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+
+    token_hash = _hash_token(token)
+    password_hash = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            select(users_table.c.id, users_table.c.reset_token_expires_at)
+            .where(users_table.c.reset_token_hash == token_hash)
+        ).first()
+        if row is None or row[1] is None or row[1] < _utcnow():
+            raise AuthError("This reset link is invalid or has expired.")
+        conn.execute(
+            users_table.update()
+            .where(users_table.c.id == row[0])
+            .values(
+                password_hash=password_hash,
+                reset_token_hash=None,
+                reset_token_expires_at=None,
+                # A successful reset is the account owner regaining
+                # control -- clear any lockout from before so they aren't
+                # still locked out with their brand new password.
+                failed_attempts=0,
+                locked_until=None,
+            )
+        )

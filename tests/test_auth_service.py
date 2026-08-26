@@ -14,7 +14,13 @@ from __future__ import annotations
 import pytest
 
 from recon_platform.auth.db import make_engine
-from recon_platform.auth.service import AuthError, authenticate, register_user
+from recon_platform.auth.service import (
+    AuthError,
+    authenticate,
+    generate_password_reset_token,
+    register_user,
+    reset_password_with_token,
+)
 
 
 @pytest.fixture
@@ -119,3 +125,91 @@ def test_successful_login_resets_failed_attempt_counter(engine):
     for _ in range(3):
         with pytest.raises(AuthError, match="Invalid username or password"):
             authenticate(engine, "heidi", "wrong-password")
+
+
+def test_reset_token_generated_and_used_successfully(engine):
+    register_user(engine, "ivan", "ivan@example.com", "correcthorse123")
+
+    token = generate_password_reset_token(engine, "ivan@example.com")
+    assert token is not None
+
+    reset_password_with_token(engine, token, "newpassword456")
+
+    # Old password no longer works, new one does.
+    with pytest.raises(AuthError, match="Invalid username or password"):
+        authenticate(engine, "ivan", "correcthorse123")
+    logged_in = authenticate(engine, "ivan", "newpassword456")
+    assert logged_in.username == "ivan"
+
+
+def test_reset_token_unknown_email_returns_none(engine):
+    """None, not an error -- callers must show the same generic message
+    for both cases, so returning (rather than raising) lets the caller
+    stay uniform without a try/except."""
+    assert generate_password_reset_token(engine, "nobody@example.com") is None
+
+
+def test_reset_password_invalid_token_rejected(engine):
+    register_user(engine, "judy", "judy@example.com", "correcthorse123")
+
+    with pytest.raises(AuthError, match="invalid or has expired"):
+        reset_password_with_token(engine, "not-a-real-token", "newpassword456")
+
+
+def test_reset_password_expired_token_rejected(engine):
+    from datetime import datetime, timedelta, timezone
+
+    from recon_platform.auth.db import users_table
+
+    register_user(engine, "mallory", "mallory@example.com", "correcthorse123")
+    token = generate_password_reset_token(engine, "mallory@example.com")
+
+    # Backdate the token's expiry directly, same technique as the SLA
+    # tests use to simulate time passing without a real sleep.
+    naive_utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with engine.begin() as conn:
+        conn.execute(
+            users_table.update()
+            .where(users_table.c.username == "mallory")
+            .values(reset_token_expires_at=naive_utc_now - timedelta(minutes=1))
+        )
+
+    with pytest.raises(AuthError, match="invalid or has expired"):
+        reset_password_with_token(engine, token, "newpassword456")
+
+
+def test_reset_token_is_single_use(engine):
+    register_user(engine, "nathan", "nathan@example.com", "correcthorse123")
+    token = generate_password_reset_token(engine, "nathan@example.com")
+
+    reset_password_with_token(engine, token, "newpassword456")
+
+    with pytest.raises(AuthError, match="invalid or has expired"):
+        reset_password_with_token(engine, token, "yetanotherpassword789")
+
+
+def test_reset_password_too_short_rejected(engine):
+    register_user(engine, "olivia", "olivia@example.com", "correcthorse123")
+    token = generate_password_reset_token(engine, "olivia@example.com")
+
+    with pytest.raises(AuthError, match="Password must be at least"):
+        reset_password_with_token(engine, token, "short")
+
+
+def test_reset_password_clears_lockout(engine):
+    register_user(engine, "peggy", "peggy@example.com", "correcthorse123")
+
+    for _ in range(5):
+        with pytest.raises(AuthError):
+            authenticate(engine, "peggy", "wrong-password")
+    with pytest.raises(AuthError, match="Too many failed attempts"):
+        authenticate(engine, "peggy", "correcthorse123")
+
+    token = generate_password_reset_token(engine, "peggy@example.com")
+    reset_password_with_token(engine, token, "newpassword456")
+
+    # Resetting the password should also lift the lockout -- otherwise
+    # the account owner would regain a working password but still be
+    # locked out from using it.
+    logged_in = authenticate(engine, "peggy", "newpassword456")
+    assert logged_in.username == "peggy"
